@@ -628,6 +628,9 @@ class RobRayPPOTrainer(RayPPOTrainer):
             print(f"len reward_extra_infos_dict['reward']: {len(reward_extra_infos_dict['reward'])}")
             if "reward_extra_info" in result:
                 for key, lst in result["reward_extra_info"].items():
+                    # Skip "reward" key since we already added it manually above to avoid duplicates
+                    if key == "reward":
+                        continue
                     reward_extra_infos_dict[key].extend(lst)
                     print(f"len reward_extra_infos_dict['{key}']: {len(reward_extra_infos_dict[key])}")
 

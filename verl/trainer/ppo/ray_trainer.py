@@ -703,6 +703,9 @@ class RayPPOTrainer:
             reward_extra_infos_dict["reward"].extend(scores)
             reward_extra_info = result.get("reward_extra_info", {})
             for key, values in reward_extra_info.items():
+                # Skip "reward" key since we already added it manually above to avoid duplicates
+                if key == "reward":
+                    continue
                 if key not in reward_extra_infos_dict:
                     reward_extra_infos_dict[key] = []
                 if isinstance(values, np.ndarray):
