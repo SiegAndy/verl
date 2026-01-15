@@ -39,6 +39,21 @@ def main(config):
     Args:
         config_dict: Hydra configuration dictionary containing training parameters.
     """
+    # Add timestamp to experiment name if not already present
+    from datetime import datetime
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    if config.trainer.experiment_name and not any(
+        char.isdigit() and len(str(char)) >= 8
+        for char in str(config.trainer.experiment_name).split("_")
+    ):
+        config.trainer.experiment_name = f"{config.trainer.experiment_name}_{timestamp}"
+
+    # Set wandb run_name to match experiment_name if not explicitly set
+    if config.wandb.get("run_name") is None:
+        config.wandb.run_name = config.trainer.experiment_name
+
     # Automatically set `config.trainer.device = npu` when running on Ascend NPU.
     auto_set_device(config)
 
@@ -72,12 +87,16 @@ def run_ppo(config, task_runner_class=None) -> None:
             runtime_env_kwargs["env_vars"] = runtime_env_vars
 
         runtime_env = OmegaConf.merge(default_runtime_env, runtime_env_kwargs)
-        ray_init_kwargs = OmegaConf.create({**ray_init_kwargs, "runtime_env": runtime_env})
+        ray_init_kwargs = OmegaConf.create(
+            {**ray_init_kwargs, "runtime_env": runtime_env}
+        )
         print(f"ray init kwargs: {ray_init_kwargs}")
         ray.init(**OmegaConf.to_container(ray_init_kwargs))
 
     if task_runner_class is None:
-        task_runner_class = ray.remote(num_cpus=1)(TaskRunner)  # please make sure main_task is not scheduled on head
+        task_runner_class = ray.remote(num_cpus=1)(
+            TaskRunner
+        )  # please make sure main_task is not scheduled on head
 
     # Create a remote instance of the TaskRunner class, and
     # Execute the `run` method of the TaskRunner instance remotely and wait for it to complete
@@ -89,11 +108,15 @@ def run_ppo(config, task_runner_class=None) -> None:
     ):
         from verl.utils.import_utils import is_nvtx_available
 
-        assert is_nvtx_available(), "nvtx is not available in CUDA platform. Please 'pip3 install nvtx'"
+        assert (
+            is_nvtx_available()
+        ), "nvtx is not available in CUDA platform. Please 'pip3 install nvtx'"
         nsight_options = OmegaConf.to_container(
             config.global_profiler.global_tool_config.nsys.controller_nsight_options
         )
-        runner = task_runner_class.options(runtime_env={"nsight": nsight_options}).remote()
+        runner = task_runner_class.options(
+            runtime_env={"nsight": nsight_options}
+        ).remote()
     else:
         runner = task_runner_class.remote()
     ray.get(runner.run.remote(config))
@@ -137,7 +160,10 @@ class TaskRunner:
             lora_rank = config.actor_rollout_ref.model.get("lora", {}).get("rank", 0)
             if lora_rank <= 0:
                 lora_rank = config.actor_rollout_ref.model.get("lora_rank", 0)
-            ref_in_actor = lora_rank > 0 or config.actor_rollout_ref.model.get("lora_adapter_path") is not None
+            ref_in_actor = (
+                lora_rank > 0
+                or config.actor_rollout_ref.model.get("lora_adapter_path") is not None
+            )
             # NOTE: In new model engine, ref policy and actor rollout are in same ActorRolloutRefWorker,
             # while in legacy model engine, ref policy is in a separate ActorRolloutRefWorker.
             if need_reference_policy(config) and not ref_in_actor:
@@ -182,7 +208,9 @@ class TaskRunner:
                 CriticWorker = TrainingWorker
                 print("Using new worker implementation")
             else:
-                raise ValueError(f"Invalid use_legacy_worker_impl: {use_legacy_worker_impl}")
+                raise ValueError(
+                    f"Invalid use_legacy_worker_impl: {use_legacy_worker_impl}"
+                )
 
         elif config.critic.strategy == "megatron":
             # TODO: switch this to TrainingWorker as well
@@ -206,16 +234,22 @@ class TaskRunner:
         # TODO Here you can use the new registration method to support dynamic registration of roles
         if config.reward_model.enable_resource_pool:
             if config.reward_model.n_gpus_per_node <= 0:
-                raise ValueError("config.reward_model.n_gpus_per_node must be greater than 0")
+                raise ValueError(
+                    "config.reward_model.n_gpus_per_node must be greater than 0"
+                )
             if config.reward_model.nnodes <= 0:
                 raise ValueError("config.reward_model.nnodes must be greater than 0")
 
-            reward_pool = [config.reward_model.n_gpus_per_node] * config.reward_model.nnodes
+            reward_pool = [
+                config.reward_model.n_gpus_per_node
+            ] * config.reward_model.nnodes
             resource_pool_spec["reward_pool"] = reward_pool
 
         from verl.trainer.ppo.ray_trainer import ResourcePoolManager
 
-        resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=self.mapping)
+        resource_pool_manager = ResourcePoolManager(
+            resource_pool_spec=resource_pool_spec, mapping=self.mapping
+        )
         return resource_pool_manager
 
     def add_reward_model_worker(self, config):
@@ -223,7 +257,9 @@ class TaskRunner:
         from verl.trainer.ppo.ray_trainer import Role
 
         if config.reward_model.enable:
-            use_legacy_worker_impl = config.trainer.get("use_legacy_worker_impl", "auto")
+            use_legacy_worker_impl = config.trainer.get(
+                "use_legacy_worker_impl", "auto"
+            )
             if use_legacy_worker_impl in ["auto", "enable", "disable"]:
                 if config.reward_model.strategy in {"fsdp", "fsdp2"}:
                     from verl.workers.fsdp_workers import RewardModelWorker
@@ -236,7 +272,9 @@ class TaskRunner:
             #
             #     print("Using new worker implementation")
             else:
-                raise ValueError(f"Invalid use_legacy_worker_impl: {use_legacy_worker_impl}")
+                raise ValueError(
+                    f"Invalid use_legacy_worker_impl: {use_legacy_worker_impl}"
+                )
 
             self.role_worker_mapping[Role.RewardModel] = ray.remote(RewardModelWorker)
             if config.reward_model.enable_resource_pool:
@@ -303,7 +341,8 @@ class TaskRunner:
         # Download the checkpoint from HDFS to the local machine.
         # `use_shm` determines whether to use shared memory, which could lead to faster model loading if turned on
         local_path = copy_to_local(
-            config.actor_rollout_ref.model.path, use_shm=config.actor_rollout_ref.model.get("use_shm", False)
+            config.actor_rollout_ref.model.path,
+            use_shm=config.actor_rollout_ref.model.get("use_shm", False),
         )
 
         # Instantiate the tokenizer and processor.
@@ -312,14 +351,22 @@ class TaskRunner:
         trust_remote_code = config.data.get("trust_remote_code", False)
         tokenizer = hf_tokenizer(local_path, trust_remote_code=trust_remote_code)
         # Used for multimodal LLM, could be None
-        processor = hf_processor(local_path, trust_remote_code=trust_remote_code, use_fast=True)
+        processor = hf_processor(
+            local_path, trust_remote_code=trust_remote_code, use_fast=True
+        )
 
         # Load the reward manager for training and validation.
         reward_fn = load_reward_manager(
-            config, tokenizer, num_examine=0, **config.reward_model.get("reward_kwargs", {})
+            config,
+            tokenizer,
+            num_examine=0,
+            **config.reward_model.get("reward_kwargs", {}),
         )
         val_reward_fn = load_reward_manager(
-            config, tokenizer, num_examine=1, **config.reward_model.get("reward_kwargs", {})
+            config,
+            tokenizer,
+            num_examine=1,
+            **config.reward_model.get("reward_kwargs", {}),
         )
 
         resource_pool_manager = self.init_resource_pool_mgr(config)
@@ -367,7 +414,9 @@ class TaskRunner:
         trainer.fit()
 
 
-def create_rl_dataset(data_paths, data_config, tokenizer, processor, is_train=True, max_samples: int = -1):
+def create_rl_dataset(
+    data_paths, data_config, tokenizer, processor, is_train=True, max_samples: int = -1
+):
     """Create a dataset.
 
     Arguments:
@@ -414,7 +463,10 @@ def create_rl_sampler(data_config, dataset):
     # torch.utils.data.RandomSampler could not recover properly
     from torchdata.stateful_dataloader.sampler import RandomSampler
 
-    if data_config.sampler is not None and data_config.sampler.get("class_path", None) is not None:
+    if (
+        data_config.sampler is not None
+        and data_config.sampler.get("class_path", None) is not None
+    ):
         curriculum_class = load_extern_object(
             data_config.sampler.class_path,
             data_config.sampler.class_name,
@@ -437,7 +489,9 @@ def create_rl_sampler(data_config, dataset):
         seed = data_config.get("seed")
         if seed is not None:
             train_dataloader_generator.manual_seed(seed)
-        sampler = RandomSampler(data_source=dataset, generator=train_dataloader_generator)
+        sampler = RandomSampler(
+            data_source=dataset, generator=train_dataloader_generator
+        )
     else:
         # If shuffling is disabled, use a sequential sampler to iterate through the dataset in order.
         sampler = SequentialSampler(data_source=dataset)
