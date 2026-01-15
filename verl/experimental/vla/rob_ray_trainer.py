@@ -40,7 +40,11 @@ from verl.trainer.ppo.metric_utils import (
     compute_timing_metrics,
     process_validation_metrics,
 )
-from verl.trainer.ppo.ray_trainer import RayPPOTrainer, apply_kl_penalty, compute_advantage
+from verl.trainer.ppo.ray_trainer import (
+    RayPPOTrainer,
+    apply_kl_penalty,
+    compute_advantage,
+)
 from verl.trainer.ppo.reward import compute_reward
 from verl.trainer.ppo.utils import Role
 from verl.utils.checkpoint.checkpoint_manager import should_save_ckpt_esi
@@ -62,17 +66,25 @@ def compute_response_mask(data: DataProto) -> torch.Tensor:
     """
     complete = data.batch["complete"]  # shape: [batch_size, num_steps, chunk_size]
 
-    complete_traj = complete.view(complete.shape[0], -1)  # # shape: [batch_size, num_steps * chunk_size]
+    complete_traj = complete.view(
+        complete.shape[0], -1
+    )  # # shape: [batch_size, num_steps * chunk_size]
     batch_size, action_steps = complete_traj.shape
 
-    step_indices = torch.arange(action_steps, device=complete.device).unsqueeze(0).expand(batch_size, -1)
+    step_indices = (
+        torch.arange(action_steps, device=complete.device)
+        .unsqueeze(0)
+        .expand(batch_size, -1)
+    )
 
     first_true_idx_approx = torch.argmax(complete_traj.long(), dim=1)
 
     has_any_true = complete_traj.any(dim=1)
 
     final_first_true_idx = torch.where(
-        has_any_true, first_true_idx_approx, torch.tensor(action_steps - 1, device=complete.device)
+        has_any_true,
+        first_true_idx_approx,
+        torch.tensor(action_steps - 1, device=complete.device),
     )
 
     mask_traj = step_indices <= final_first_true_idx.unsqueeze(1)
@@ -86,7 +98,11 @@ def flatten_trajectories(data: DataProto) -> DataProto:
     batch_size, num_steps = data.batch["action"].shape[:2]
     new_batch_fields = {}
     for key, tensor in data.batch.items():
-        if len(tensor.shape) >= 2 and tensor.shape[0] == batch_size and tensor.shape[1] == num_steps:
+        if (
+            len(tensor.shape) >= 2
+            and tensor.shape[0] == batch_size
+            and tensor.shape[1] == num_steps
+        ):
             # (B, S, H, W) -> (B*S, H, W)
             new_shape = (batch_size * num_steps, *tensor.shape[2:])
             new_batch_fields[key] = tensor.reshape(new_shape)
@@ -127,10 +143,16 @@ class RobRayPPOTrainer(RayPPOTrainer):
 
         if self.config.env.disagg_sim.enable:
             # pin EnvWorker to Simulator GPU nodes
-            self.resource_pool_manager.get_resource_pool(Role.Env).accelerator_type = "sim"
-            self.resource_pool_manager.get_resource_pool(Role.ActorRollout).accelerator_type = "train_rollout"
+            self.resource_pool_manager.get_resource_pool(Role.Env).accelerator_type = (
+                "sim"
+            )
+            self.resource_pool_manager.get_resource_pool(
+                Role.ActorRollout
+            ).accelerator_type = "train_rollout"
 
-        self.resource_pool_to_cls = {pool: {} for pool in self.resource_pool_manager.resource_pool_dict.values()}
+        self.resource_pool_to_cls = {
+            pool: {} for pool in self.resource_pool_manager.resource_pool_dict.values()
+        }
         resource_pool = self.resource_pool_manager.get_resource_pool(Role.ActorRollout)
         actor_rollout_cls = RayClassWithInitArgs(
             cls=self.role_worker_mapping[Role.ActorRollout],
@@ -142,7 +164,9 @@ class RobRayPPOTrainer(RayPPOTrainer):
         assert Role.Env in self.role_worker_mapping
         if Role.Env in self.role_worker_mapping:
             resource_pool = self.resource_pool_manager.get_resource_pool(Role.Env)
-            env_cls = RayClassWithInitArgs(self.role_worker_mapping[Role.Env], config=self.config.env)
+            env_cls = RayClassWithInitArgs(
+                self.role_worker_mapping[Role.Env], config=self.config.env
+            )
             self.resource_pool_to_cls[resource_pool]["env"] = env_cls
 
         # initialize WorkerGroup
@@ -152,18 +176,31 @@ class RobRayPPOTrainer(RayPPOTrainer):
         # See https://github.com/volcengine/verl/blob/master/examples/ray/tutorial.ipynb for more information.
         all_wg = {}
         wg_kwargs = {}  # Setting up kwargs for RayWorkerGroup
-        if OmegaConf.select(self.config.trainer, "ray_wait_register_center_timeout") is not None:
-            wg_kwargs["ray_wait_register_center_timeout"] = self.config.trainer.ray_wait_register_center_timeout
+        if (
+            OmegaConf.select(self.config.trainer, "ray_wait_register_center_timeout")
+            is not None
+        ):
+            wg_kwargs["ray_wait_register_center_timeout"] = (
+                self.config.trainer.ray_wait_register_center_timeout
+            )
         if OmegaConf.select(self.config.global_profiler, "steps") is not None:
-            wg_kwargs["profile_steps"] = OmegaConf.select(self.config.global_profiler, "steps")
+            wg_kwargs["profile_steps"] = OmegaConf.select(
+                self.config.global_profiler, "steps"
+            )
             # Only require nsight worker options when tool is nsys
             if OmegaConf.select(self.config.global_profiler, "tool") == "nsys":
                 assert (
-                    OmegaConf.select(self.config.global_profiler.global_tool_config.nsys, "worker_nsight_options")
+                    OmegaConf.select(
+                        self.config.global_profiler.global_tool_config.nsys,
+                        "worker_nsight_options",
+                    )
                     is not None
                 ), "worker_nsight_options must be set when using nsys with profile_steps"
                 wg_kwargs["worker_nsight_options"] = OmegaConf.to_container(
-                    OmegaConf.select(self.config.global_profiler.global_tool_config.nsys, "worker_nsight_options")
+                    OmegaConf.select(
+                        self.config.global_profiler.global_tool_config.nsys,
+                        "worker_nsight_options",
+                    )
                 )
         wg_kwargs["device_name"] = self.device_name
 
@@ -206,7 +243,9 @@ class RobRayPPOTrainer(RayPPOTrainer):
     def _reset_envs(self, gen_batch: DataProto) -> asyncio.Future:
         initial_state_ids = gen_batch.non_tensor_batch["state_ids"]
         task_ids = gen_batch.non_tensor_batch["task_ids"]
-        reset_prompts = DataProto.from_dict(non_tensors={"state_ids": initial_state_ids, "task_ids": task_ids})
+        reset_prompts = DataProto.from_dict(
+            non_tensors={"state_ids": initial_state_ids, "task_ids": task_ids}
+        )
         reset_future = self.env_wg.reset_envs_to_state_ids(reset_prompts)
         return reset_future
 
@@ -235,7 +274,9 @@ class RobRayPPOTrainer(RayPPOTrainer):
 
         # perform validation before training
         # currently, we only support validation using the reward_function.
-        if self.val_reward_fn is not None and self.config.trainer.get("val_before_train", True):
+        if self.val_reward_fn is not None and self.config.trainer.get(
+            "val_before_train", True
+        ):
             val_metrics = self._validate()
             assert val_metrics, f"{val_metrics=}"
             pprint(f"Initial validation metrics: {val_metrics}")
@@ -244,7 +285,11 @@ class RobRayPPOTrainer(RayPPOTrainer):
                 return
 
         # add tqdm
-        progress_bar = tqdm(total=self.total_training_steps, initial=self.global_steps, desc="Training Progress")
+        progress_bar = tqdm(
+            total=self.total_training_steps,
+            initial=self.global_steps,
+            desc="Training Progress",
+        )
 
         # we start from step 1
         self.global_steps += 1
@@ -285,7 +330,9 @@ class RobRayPPOTrainer(RayPPOTrainer):
                 batch: DataProto = DataProto.from_single_dict(batch_dict)
 
                 # add uid to batch
-                batch.non_tensor_batch["uid"] = np.array([str(uuid.uuid4()) for _ in range(len(batch))], dtype=object)
+                batch.non_tensor_batch["uid"] = np.array(
+                    [str(uuid.uuid4()) for _ in range(len(batch))], dtype=object
+                )
 
                 gen_batch = self._get_gen_batch(batch)
 
@@ -293,13 +340,22 @@ class RobRayPPOTrainer(RayPPOTrainer):
                 gen_batch.meta_info["global_steps"] = self.global_steps
                 # pass generation config to gen_batch
                 gen_batch.meta_info["do_sample"] = True
-                gen_batch.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
-                gen_batch.meta_info["prompt_length"] = self.config.actor_rollout_ref.rollout.prompt_length
+                gen_batch.meta_info["temperature"] = (
+                    self.config.actor_rollout_ref.rollout.temperature
+                )
+                gen_batch.meta_info["prompt_length"] = (
+                    self.config.actor_rollout_ref.rollout.prompt_length
+                )
                 gen_batch.meta_info["eos_token_id"] = self.tokenizer.eos_token_id
-                gen_batch.meta_info["n_samples"] = self.config.actor_rollout_ref.rollout.n
+                gen_batch.meta_info["n_samples"] = (
+                    self.config.actor_rollout_ref.rollout.n
+                )
                 gen_batch.meta_info["pad_token_id"] = self.tokenizer.pad_token_id
 
-                gen_batch = gen_batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+                gen_batch = gen_batch.repeat(
+                    repeat_times=self.config.actor_rollout_ref.rollout.n,
+                    interleave=True,
+                )
 
                 is_last_step = self.global_steps >= self.total_training_steps
 
@@ -311,25 +367,38 @@ class RobRayPPOTrainer(RayPPOTrainer):
                 need_validate = (
                     self.val_reward_fn is not None
                     and self.config.trainer.test_freq > 0
-                    and (is_last_step or self.global_steps % self.config.trainer.test_freq == 0)
+                    and (
+                        is_last_step
+                        or self.global_steps % self.config.trainer.test_freq == 0
+                    )
                 )
 
                 with marked_timer("step", timing_raw):
                     # generate a batch
                     with marked_timer("gen", timing_raw, color="red"):
-                        gen_batch_output = self.async_rollout_manager.generate_sequences(gen_batch, reset_future)
+                        gen_batch_output = (
+                            self.async_rollout_manager.generate_sequences(
+                                gen_batch, reset_future
+                            )
+                        )
 
                     # prepare for next batch's env reset
                     if step_idx != dataloader_len - 1 and not need_validate:
-                        next_batch: DataProto = DataProto.from_single_dict(next_batch_dict)
+                        next_batch: DataProto = DataProto.from_single_dict(
+                            next_batch_dict
+                        )
                         next_gen_batch = self._get_gen_batch(next_batch)
                         next_gen_batch = next_gen_batch.repeat(
-                            repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True
+                            repeat_times=self.config.actor_rollout_ref.rollout.n,
+                            interleave=True,
                         )
                         reset_future = self._reset_envs(next_gen_batch)
 
                     # repeat to align with repeated responses in rollout
-                    batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
+                    batch = batch.repeat(
+                        repeat_times=self.config.actor_rollout_ref.rollout.n,
+                        interleave=True,
+                    )
                     batch = gen_batch_output
 
                     if "response_mask" not in batch.batch.keys():
@@ -337,12 +406,16 @@ class RobRayPPOTrainer(RayPPOTrainer):
 
                     with marked_timer("reward", timing_raw, color="yellow"):
                         # compute reward model score
-                        reward_tensor, reward_extra_infos_dict = compute_reward(batch, self.reward_fn)
+                        reward_tensor, reward_extra_infos_dict = compute_reward(
+                            batch, self.reward_fn
+                        )
 
                     batch.batch["reward_tensor"] = reward_tensor
                     batch = flatten_trajectories(batch)
 
-                    batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
+                    batch.meta_info["global_token_num"] = torch.sum(
+                        batch.batch["attention_mask"], dim=-1
+                    ).tolist()
 
                     # recompute old_log_probs
                     with marked_timer("old_log_prob", timing_raw, color="blue"):
@@ -356,7 +429,9 @@ class RobRayPPOTrainer(RayPPOTrainer):
                             loss_agg_mode=actor_config.loss_agg_mode,
                             loss_scale_factor=actor_config.loss_scale_factor,
                         )
-                        old_log_prob_metrics = {"actor/entropy": entropy_agg.detach().item()}
+                        old_log_prob_metrics = {
+                            "actor/entropy": entropy_agg.detach().item()
+                        }
                         metrics.update(old_log_prob_metrics)
                         old_log_prob.batch.pop("entropys")
                         batch = batch.union(old_log_prob)
@@ -371,9 +446,13 @@ class RobRayPPOTrainer(RayPPOTrainer):
                         # compute reference log_prob
                         with marked_timer("ref", timing_raw, color="olive"):
                             if not self.ref_in_actor:
-                                ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(batch)
+                                ref_log_prob = self.ref_policy_wg.compute_ref_log_prob(
+                                    batch
+                                )
                             else:
-                                ref_log_prob = self.actor_rollout_wg.compute_ref_log_prob(batch)
+                                ref_log_prob = (
+                                    self.actor_rollout_wg.compute_ref_log_prob(batch)
+                                )
                             batch = batch.union(ref_log_prob)
 
                     # compute values
@@ -386,30 +465,47 @@ class RobRayPPOTrainer(RayPPOTrainer):
                         # we combine with rule-based rm
                         reward_extra_infos_dict: dict[str, list] = None
 
-                        token_level_scores = torch.zeros_like(response_masks, dtype=torch.float32)
+                        token_level_scores = torch.zeros_like(
+                            response_masks, dtype=torch.float32
+                        )
                         flipped_mask = response_masks.flip(dims=[1])
                         indices_in_flipped = torch.argmax(flipped_mask.long(), dim=1)
 
-                        last_true_indices = response_masks.shape[-1] - 1 - indices_in_flipped
-                        rows_with_response = response_masks.any(dim=1)
-                        effective_rewards = batch.batch["reward_tensor"] * rows_with_response.to(
-                            batch.batch["reward_tensor"].dtype
+                        last_true_indices = (
+                            response_masks.shape[-1] - 1 - indices_in_flipped
                         )
-                        row_indices = torch.arange(response_masks.shape[0], device=token_level_scores.device)
+                        rows_with_response = response_masks.any(dim=1)
+                        effective_rewards = batch.batch[
+                            "reward_tensor"
+                        ] * rows_with_response.to(batch.batch["reward_tensor"].dtype)
+                        row_indices = torch.arange(
+                            response_masks.shape[0], device=token_level_scores.device
+                        )
 
-                        token_level_scores[row_indices, last_true_indices] = effective_rewards
+                        token_level_scores[row_indices, last_true_indices] = (
+                            effective_rewards
+                        )
                         batch.batch["token_level_scores"] = token_level_scores
                         if reward_extra_infos_dict:
-                            batch.non_tensor_batch.update({k: np.array(v) for k, v in reward_extra_infos_dict.items()})
+                            batch.non_tensor_batch.update(
+                                {
+                                    k: np.array(v)
+                                    for k, v in reward_extra_infos_dict.items()
+                                }
+                            )
 
                         # compute rewards. apply_kl_penalty if available
                         if self.config.algorithm.use_kl_in_reward:
                             batch, kl_metrics = apply_kl_penalty(
-                                batch, kl_ctrl=self.kl_ctrl_in_reward, kl_penalty=self.config.algorithm.kl_penalty
+                                batch,
+                                kl_ctrl=self.kl_ctrl_in_reward,
+                                kl_penalty=self.config.algorithm.kl_penalty,
                             )
                             metrics.update(kl_metrics)
                         else:
-                            batch.batch["token_level_rewards"] = batch.batch["token_level_scores"]
+                            batch.batch["token_level_rewards"] = batch.batch[
+                                "token_level_scores"
+                            ]
 
                         # compute advantages, executed on the driver process
 
@@ -431,27 +527,43 @@ class RobRayPPOTrainer(RayPPOTrainer):
                     if self.use_critic:
                         with marked_timer("update_critic", timing_raw, color="pink"):
                             critic_output = self.critic_wg.update_critic(batch)
-                        critic_output_metrics = reduce_metrics(critic_output.meta_info["metrics"])
+                        critic_output_metrics = reduce_metrics(
+                            critic_output.meta_info["metrics"]
+                        )
                         metrics.update(critic_output_metrics)
 
                     # implement critic warmup
                     if self.config.trainer.critic_warmup <= self.global_steps:
                         # update actor
                         with marked_timer("update_actor", timing_raw, color="red"):
-                            batch.meta_info["multi_turn"] = self.config.actor_rollout_ref.rollout.multi_turn.enable
+                            batch.meta_info["multi_turn"] = (
+                                self.config.actor_rollout_ref.rollout.multi_turn.enable
+                            )
                             actor_output = self.actor_rollout_wg.update_actor(batch)
-                        actor_output_metrics = reduce_metrics(actor_output.meta_info["metrics"])
+                        actor_output_metrics = reduce_metrics(
+                            actor_output.meta_info["metrics"]
+                        )
                         metrics.update(actor_output_metrics)
 
                     # Log rollout generations if enabled
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
                     if rollout_data_dir:
-                        with marked_timer("dump_rollout_generations", timing_raw, color="green"):
-                            inputs = self.tokenizer.batch_decode(batch.batch["prompts"], skip_special_tokens=True)
-                            outputs = self.tokenizer.batch_decode(batch.batch["responses"], skip_special_tokens=True)
-                            scores = batch.batch["token_level_scores"].sum(-1).cpu().tolist()
+                        with marked_timer(
+                            "dump_rollout_generations", timing_raw, color="green"
+                        ):
+                            inputs = self.tokenizer.batch_decode(
+                                batch.batch["prompts"], skip_special_tokens=True
+                            )
+                            outputs = self.tokenizer.batch_decode(
+                                batch.batch["responses"], skip_special_tokens=True
+                            )
+                            scores = (
+                                batch.batch["token_level_scores"].sum(-1).cpu().tolist()
+                            )
                             sample_gts = [
-                                item.non_tensor_batch.get("reward_model", {}).get("ground_truth", None)
+                                item.non_tensor_batch.get("reward_model", {}).get(
+                                    "ground_truth", None
+                                )
                                 for item in batch
                             ]
 
@@ -491,10 +603,14 @@ class RobRayPPOTrainer(RayPPOTrainer):
                 # 3. The current step number is a multiple of the save frequency.
                 # 4. The ESI(Elastic Server Instance)/training plan is close to expiration.
                 if self.config.trainer.save_freq > 0 and (
-                    is_last_step or self.global_steps % self.config.trainer.save_freq == 0 or esi_close_to_expiration
+                    is_last_step
+                    or self.global_steps % self.config.trainer.save_freq == 0
+                    or esi_close_to_expiration
                 ):
                     if esi_close_to_expiration:
-                        print("Force saving checkpoint: ESI instance expiration approaching.")
+                        print(
+                            "Force saving checkpoint: ESI instance expiration approaching."
+                        )
                     with marked_timer("save_checkpoint", timing_raw, color="green"):
                         self._save_checkpoint()
 
@@ -523,11 +639,19 @@ class RobRayPPOTrainer(RayPPOTrainer):
                     }
                 )
                 # collect metrics
-                metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
-                metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
+                metrics.update(
+                    compute_data_metrics(batch=batch, use_critic=self.use_critic)
+                )
+                metrics.update(
+                    compute_timing_metrics(batch=batch, timing_raw=timing_raw)
+                )
                 # TODO: implement actual tflpo and theoretical tflpo
                 n_gpus = self.resource_pool_manager.get_n_gpus()
-                metrics.update(compute_throughout_metrics(batch=batch, timing_raw=timing_raw, n_gpus=n_gpus))
+                metrics.update(
+                    compute_throughout_metrics(
+                        batch=batch, timing_raw=timing_raw, n_gpus=n_gpus
+                    )
+                )
 
                 # this is experimental and may be changed/removed in the future in favor of a general-purpose one
                 if isinstance(self.train_dataloader.sampler, AbstractCurriculumSampler):
@@ -541,10 +665,12 @@ class RobRayPPOTrainer(RayPPOTrainer):
 
                 if (
                     hasattr(self.config.actor_rollout_ref.actor, "profiler")
-                    and self.config.actor_rollout_ref.actor.profiler.tool == "torch_memory"
+                    and self.config.actor_rollout_ref.actor.profiler.tool
+                    == "torch_memory"
                 ):
                     self.actor_rollout_wg.dump_memory_snapshot(
-                        tag=f"post_update_step{self.global_steps}", sub_dir=f"step{self.global_steps}"
+                        tag=f"post_update_step{self.global_steps}",
+                        sub_dir=f"step{self.global_steps}",
                     )
 
                 if is_last_step:
@@ -598,18 +724,29 @@ class RobRayPPOTrainer(RayPPOTrainer):
             sample_uids.extend(test_gen_batch.non_tensor_batch["uid"])
 
             # pad to be divisible by dp_size
-            size_divisor = self.config.env.train.num_envs * self.config.env.rollout.pipeline_stage_num
-            test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, size_divisor)
+            size_divisor = (
+                self.config.env.train.num_envs
+                * self.config.env.rollout.pipeline_stage_num
+            )
+            test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(
+                test_gen_batch, size_divisor
+            )
             if not self.async_rollout_mode:
-                test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
+                test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(
+                    test_gen_batch_padded
+                )
             else:
                 reset_future = self._reset_envs(test_gen_batch_padded)
-                test_output_gen_batch_padded = self.async_rollout_manager.generate_sequences(
-                    test_gen_batch_padded, reset_future
+                test_output_gen_batch_padded = (
+                    self.async_rollout_manager.generate_sequences(
+                        test_gen_batch_padded, reset_future
+                    )
                 )
 
             # unpad
-            test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
+            test_output_gen_batch = unpad_dataproto(
+                test_output_gen_batch_padded, pad_size=pad_size
+            )
 
             print("validation generation end")
 
@@ -625,36 +762,56 @@ class RobRayPPOTrainer(RayPPOTrainer):
             sample_scores.extend(scores)
 
             reward_extra_infos_dict["reward"].extend(scores)
-            print(f"len reward_extra_infos_dict['reward']: {len(reward_extra_infos_dict['reward'])}")
+            print(
+                f"len reward_extra_infos_dict['reward']: {len(reward_extra_infos_dict['reward'])}"
+            )
             if "reward_extra_info" in result:
                 for key, lst in result["reward_extra_info"].items():
                     # Skip "reward" key since we already added it manually above to avoid duplicates
                     if key == "reward":
                         continue
                     reward_extra_infos_dict[key].extend(lst)
-                    print(f"len reward_extra_infos_dict['{key}']: {len(reward_extra_infos_dict[key])}")
+                    print(
+                        f"len reward_extra_infos_dict['{key}']: {len(reward_extra_infos_dict[key])}"
+                    )
 
             # collect num_turns of each prompt
             if "__num_turns__" in test_batch.non_tensor_batch:
                 sample_turns.append(test_batch.non_tensor_batch["__num_turns__"])
 
-            data_source_lst.append(test_batch.non_tensor_batch.get("data_source", ["unknown"] * reward_tensor.shape[0]))
+            data_source_lst.append(
+                test_batch.non_tensor_batch.get(
+                    "data_source", ["unknown"] * reward_tensor.shape[0]
+                )
+            )
 
         for key_info, lst in reward_extra_infos_dict.items():
-            assert len(lst) == 0 or len(lst) == len(sample_scores), f"{key_info}: {len(lst)=}, {len(sample_scores)=}"
+            assert len(lst) == 0 or len(lst) == len(
+                sample_scores
+            ), f"{key_info}: {len(lst)=}, {len(sample_scores)=}"
 
         data_sources = np.concatenate(data_source_lst, axis=0)
 
-        data_src2var2metric2val = process_validation_metrics(data_sources, sample_uids, reward_extra_infos_dict)
+        data_src2var2metric2val = process_validation_metrics(
+            data_sources, sample_uids, reward_extra_infos_dict
+        )
         metric_dict = {}
         for data_source, var2metric2val in data_src2var2metric2val.items():
             core_var = "acc" if "acc" in var2metric2val else "reward"
             for var_name, metric2val in var2metric2val.items():
-                n_max = max([int(name.split("@")[-1].split("/")[0]) for name in metric2val.keys()])
+                n_max = max(
+                    [
+                        int(name.split("@")[-1].split("/")[0])
+                        for name in metric2val.keys()
+                    ]
+                )
                 for metric_name, metric_val in metric2val.items():
                     if (
                         (var_name == core_var)
-                        and any(metric_name.startswith(pfx) for pfx in ["mean", "maj", "best"])
+                        and any(
+                            metric_name.startswith(pfx)
+                            for pfx in ["mean", "maj", "best"]
+                        )
                         and (f"@{n_max}" in metric_name)
                     ):
                         metric_sec = "val-core"
