@@ -142,6 +142,7 @@ class ToolAgentLoop(AgentLoopBase):
         metrics = {}
         request_id = uuid4().hex
         tools_kwargs = kwargs.get("tools_kwargs", {})
+        extra_info = kwargs.get("extra_info", {})
 
         # Initialize interaction if needed
         interaction = None
@@ -169,6 +170,8 @@ class ToolAgentLoop(AgentLoopBase):
             interaction=interaction,
             interaction_kwargs=interaction_kwargs,
         )
+        if isinstance(extra_info, dict):
+            agent_data.extra_fields.update(extra_info)
 
         # State machine loop
         state = AgentState.PENDING
@@ -193,6 +196,11 @@ class ToolAgentLoop(AgentLoopBase):
             multi_modal_data["images"] = agent_data.image_data
         if agent_data.video_data is not None:
             multi_modal_data["videos"] = agent_data.video_data
+        extra_fields = dict(agent_data.extra_fields)
+        extra_fields.update(
+            {"turn_scores": agent_data.turn_scores, "tool_rewards": agent_data.tool_rewards}
+        )
+
         output = AgentLoopOutput(
             prompt_ids=prompt_ids,
             response_ids=response_ids[: self.response_length],
@@ -203,9 +211,8 @@ class ToolAgentLoop(AgentLoopBase):
             else None,
             num_turns=agent_data.user_turns + agent_data.assistant_turns + 1,
             metrics=agent_data.metrics,
-            extra_fields={},
+            extra_fields=extra_fields,
         )
-        output.extra_fields.update({"turn_scores": agent_data.turn_scores, "tool_rewards": agent_data.tool_rewards})
         return output
 
     async def _handle_pending_state(self, agent_data: AgentData, sampling_params: dict[str, Any]) -> AgentState:
@@ -243,6 +250,10 @@ class ToolAgentLoop(AgentLoopBase):
 
         if output.routed_experts is not None:
             agent_data.routed_experts = output.routed_experts
+        if output.finish_reason is not None:
+            agent_data.extra_fields["finish_reason"] = output.finish_reason
+        elif output.stop_reason is not None:
+            agent_data.extra_fields["finish_reason"] = output.stop_reason
 
         # Check termination conditions
         if not ignore_termination and len(agent_data.response_mask) >= self.response_length:
@@ -253,7 +264,24 @@ class ToolAgentLoop(AgentLoopBase):
             return AgentState.TERMINATED
 
         # Extract tool calls
-        _, agent_data.tool_calls = await self.tool_parser.extract_tool_calls(agent_data.response_ids)
+        self._update_tool_parser_context(agent_data)
+        response_text, agent_data.tool_calls = await self.tool_parser.extract_tool_calls(agent_data.response_ids)
+        parse_error = self._get_tool_parser_error()
+        if parse_error:
+            qid, query = self._resolve_tool_context(agent_data)
+            logger.warning(
+                "Tool parsing failed: %s qid=%s query=%s finish_reason=%s parse_comment=%s response=%s",
+                parse_error,
+                qid,
+                query,
+                agent_data.extra_fields.get("finish_reason"),
+                parse_error,
+                response_text,
+            )
+            agent_data.metrics["tool_error"] = parse_error
+            agent_data.extra_fields["tool_error"] = parse_error
+            agent_data.extra_fields["final_reward"] = -1.0
+            return AgentState.TERMINATED
 
         # Handle interaction if needed
         if self.interaction_config_file:
@@ -287,7 +315,8 @@ class ToolAgentLoop(AgentLoopBase):
 
         # Process tool responses and update multi_modal_data
         # Removed: agent_data.new_images_this_turn = []
-        for tool_response, tool_reward, _ in responses:
+        should_terminate = False
+        for tool_response, tool_reward, tool_meta in responses:
             # Create message from tool response
             if tool_response.image or tool_response.video:
                 # Multi-modal content with structured format
@@ -334,6 +363,8 @@ class ToolAgentLoop(AgentLoopBase):
 
             if tool_reward is not None:
                 agent_data.tool_rewards.append(tool_reward)
+            if isinstance(tool_meta, dict) and tool_meta.get("tool_is_final"):
+                should_terminate = True
 
         agent_data.messages.extend(add_messages)
 
@@ -368,7 +399,7 @@ class ToolAgentLoop(AgentLoopBase):
         if agent_data.response_logprobs:
             agent_data.response_logprobs += [0.0] * len(response_ids)
         agent_data.user_turns += 1
-        return AgentState.GENERATING
+        return AgentState.TERMINATED if should_terminate else AgentState.GENERATING
 
     async def _handle_interacting_state(self, agent_data: AgentData) -> AgentState:
         """Handle the interacting state: get user input from interaction."""
@@ -456,6 +487,47 @@ class ToolAgentLoop(AgentLoopBase):
                     tool_response_kwargs[attr_name] = attr_value
 
         return ToolResponse(**tool_response_kwargs), tool_reward, res
+
+    def _update_tool_parser_context(self, agent_data: AgentData) -> None:
+        set_context = getattr(self.tool_parser, "set_context", None)
+        if not callable(set_context):
+            return
+
+        qid, query = self._resolve_tool_context(agent_data)
+        finish_reason = agent_data.extra_fields.get("finish_reason")
+        try:
+            set_context(qid=qid, query=query, finish_reason=finish_reason)
+        except TypeError:
+            set_context(qid=qid, query=query)
+
+    def _resolve_tool_context(self, agent_data: AgentData) -> tuple[str, Optional[str]]:
+        qid = None
+        query = None
+        original_data = agent_data.extra_fields.get("original_data", {})
+        if isinstance(original_data, dict):
+            qid = original_data.get("qid")
+            query = original_data.get("question")
+
+        if qid is None:
+            qid = agent_data.request_id
+        if query is None:
+            query = self._get_last_user_message(agent_data.messages)
+
+        return qid, query
+
+    def _get_last_user_message(self, messages: list[dict[str, Any]]) -> Optional[str]:
+        for message in reversed(messages):
+            if message.get("role") == "user":
+                content = message.get("content")
+                if isinstance(content, str):
+                    return content
+        return None
+
+    def _get_tool_parser_error(self) -> Optional[str]:
+        get_error = getattr(self.tool_parser, "get_last_parse_error", None)
+        if callable(get_error):
+            return get_error()
+        return None
 
     def _initialize_interactions(self, interaction_config_file):
         """Initialize interactions from configuration.

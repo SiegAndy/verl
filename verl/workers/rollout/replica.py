@@ -37,6 +37,8 @@ class TokenOutput(BaseModel):
     """logprobs of response token ids"""
     routed_experts: Optional[Any] = None
     """routed experts of response token ids"""
+    finish_reason: Optional[str] = None
+    """raw finish reason from backend (e.g., 'stop', 'length', 'abort')"""
     stop_reason: Optional[str] = None
     """stop reason: 'completed', 'aborted', or None for unknown"""
 
