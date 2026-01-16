@@ -19,6 +19,7 @@ This trainer supports model-agonistic model initialization with huggingface
 """
 
 import json
+import logging
 import os
 import uuid
 from collections import defaultdict
@@ -28,6 +29,8 @@ from pprint import pprint
 from typing import Any, Optional
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 import ray
 import torch
 from omegaconf import OmegaConf, open_dict
@@ -1186,11 +1189,17 @@ class RayPPOTrainer:
             "agent_loop_manager_class"
         )
         if manager_class_fqn:
+            logger.warning(f"Loading custom AgentLoopManager from: {manager_class_fqn}")
             AgentLoopManager = load_class_from_fqn(
                 manager_class_fqn, "AgentLoopManager"
             )
+            logger.warning(
+                f"Custom AgentLoopManager loaded successfully: {AgentLoopManager}"
+            )
         else:
             from verl.experimental.agent_loop import AgentLoopManager
+
+            logger.warning("Using default AgentLoopManager")
 
         if (
             self.config.reward_model.enable
