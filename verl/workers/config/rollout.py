@@ -58,6 +58,9 @@ class MultiTurnConfig(BaseConfig):
     tokenization_sanity_check_mode: str = "strict"
     format: str = "hermes"
     num_repeat_rollouts: Optional[int] = None
+    # Multi-turn optimization features
+    enable_turn_batching: bool = True  # Synchronize samples at turn boundaries for batch tool processing
+    log_turn_statistics: bool = True  # Log detailed per-turn timing and revision statistics
 
 
 @dataclass
