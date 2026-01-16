@@ -157,23 +157,24 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
     else:
         raise ValueError("All samples are aborted, this should not happen.")
 
+    prefix = "critic" if use_critic else "rollout"
     metrics = {
         # score
-        "critic/score/mean": score_mean,
-        "critic/score/max": score_max,
-        "critic/score/min": score_min,
+        f"{prefix}/score/mean": score_mean,
+        f"{prefix}/score/max": score_max,
+        f"{prefix}/score/min": score_min,
         # reward
-        "critic/rewards/mean": reward_mean,
-        "critic/rewards/max": reward_max,
-        "critic/rewards/min": reward_min,
+        f"{prefix}/rewards/mean": reward_mean,
+        f"{prefix}/rewards/max": reward_max,
+        f"{prefix}/rewards/min": reward_min,
         # adv
-        "critic/advantages/mean": torch.mean(valid_adv).detach().item(),
-        "critic/advantages/max": torch.max(valid_adv).detach().item(),
-        "critic/advantages/min": torch.min(valid_adv).detach().item(),
+        f"{prefix}/advantages/mean": torch.mean(valid_adv).detach().item(),
+        f"{prefix}/advantages/max": torch.max(valid_adv).detach().item(),
+        f"{prefix}/advantages/min": torch.min(valid_adv).detach().item(),
         # returns
-        "critic/returns/mean": torch.mean(valid_returns).detach().item(),
-        "critic/returns/max": torch.max(valid_returns).detach().item(),
-        "critic/returns/min": torch.min(valid_returns).detach().item(),
+        f"{prefix}/returns/mean": torch.mean(valid_returns).detach().item(),
+        f"{prefix}/returns/max": torch.max(valid_returns).detach().item(),
+        f"{prefix}/returns/min": torch.min(valid_returns).detach().item(),
         **(
             {
                 # values

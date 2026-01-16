@@ -1767,6 +1767,11 @@ class RayPPOTrainer:
 
                         timing_raw.update(gen_batch_output.meta_info["timing"])
                         gen_batch_output.meta_info.pop("timing", None)
+                        agent_metrics = gen_batch_output.meta_info.pop(
+                            "agent_metrics", None
+                        )
+                        if agent_metrics:
+                            metrics.update(agent_metrics)
 
                     if self.config.algorithm.adv_estimator == AdvantageEstimator.REMAX:
                         if self.reward_fn is None:
@@ -2101,6 +2106,12 @@ class RayPPOTrainer:
                 metrics.update(
                     compute_data_metrics(batch=batch, use_critic=self.use_critic)
                 )
+                reward_prefix = "critic" if self.use_critic else "rollout"
+                reward_mean = metrics.get(f"{reward_prefix}/rewards/mean")
+                if reward_mean is not None:
+                    metrics.setdefault("train/reward", reward_mean)
+                if "actor/pg_loss" in metrics:
+                    metrics.setdefault("train/loss", metrics["actor/pg_loss"])
                 metrics.update(
                     compute_timing_metrics(batch=batch, timing_raw=timing_raw)
                 )

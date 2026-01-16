@@ -125,6 +125,8 @@ class AsyncLLMServerManager:
 class AgentLoopMetrics(BaseModel):
     """Agent loop performance metrics."""
 
+    model_config = ConfigDict(extra="allow")
+
     generate_sequences: float = 0.0
     tool_calls: float = 0.0
 
@@ -955,9 +957,33 @@ class AgentLoopManager:
         # calculate performance metrics
         metrics = [output.meta_info.pop("metrics") for output in outputs]  # List[List[Dict[str, str]]]
         timing = self._performance_metrics(metrics, output)
+        agent_metrics = self._aggregate_agent_metrics(metrics)
 
         output.meta_info = {"timing": timing, **outputs[0].meta_info}
+        if agent_metrics:
+            output.meta_info["agent_metrics"] = agent_metrics
         return output
+
+    def _aggregate_agent_metrics(self, metrics: list[list[dict[str, Any]]]) -> dict[str, float]:
+        aggregated = {}
+        key_map = {
+            "latency": "tool/latency",
+            "tool_client_latency": "tool/client_latency",
+            "tool_reward": "tool/reward",
+        }
+        for metric_key, prefix in key_map.items():
+            values = []
+            for chunk in metrics:
+                for metric in chunk:
+                    value = metric.get(metric_key)
+                    if isinstance(value, (int, float, np.floating, np.integer)):
+                        values.append(float(value))
+            if values:
+                arr = np.asarray(values, dtype=np.float32)
+                aggregated[f"{prefix}/min"] = float(arr.min())
+                aggregated[f"{prefix}/max"] = float(arr.max())
+                aggregated[f"{prefix}/mean"] = float(arr.mean())
+        return aggregated
 
     def _performance_metrics(self, metrics: list[list[dict[str, str]]], output: DataProto) -> dict[str, float]:
         timing = {}
