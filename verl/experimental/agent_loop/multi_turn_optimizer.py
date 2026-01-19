@@ -63,6 +63,7 @@ class MultiTurnStatisticsCollector:
 
     turn_stats: Dict[int, TurnStatistics] = field(default_factory=dict)
     sample_turn_counts: List[int] = field(default_factory=list)
+    sample_revision_counts: List[int] = field(default_factory=list)
     total_samples: int = 0
 
     def record_turn(
@@ -84,9 +85,12 @@ class MultiTurnStatisticsCollector:
         )
         self.turn_stats[turn_number].samples_in_turn += 1
 
-    def record_sample_completion(self, sample_idx: int, num_turns: int):
-        """Record that a sample completed with given number of turns."""
+    def record_sample_completion(
+        self, sample_idx: int, num_turns: int, num_revisions: int = 0
+    ):
+        """Record that a sample completed with given number of turns and revisions."""
         self.sample_turn_counts.append(num_turns)
+        self.sample_revision_counts.append(num_revisions)
         self.total_samples += 1
 
     def get_aggregated_stats(self) -> Dict[str, Any]:
@@ -99,10 +103,19 @@ class MultiTurnStatisticsCollector:
         for count in self.sample_turn_counts:
             turn_distribution[count] += 1
 
-        # Calculate revision statistics
-        samples_with_revisions = sum(1 for c in self.sample_turn_counts if c > 1)
+        # Revision distribution (based on tool-driven replanning)
+        revision_distribution = defaultdict(int)
+        for count in self.sample_revision_counts:
+            revision_distribution[count] += 1
+
+        samples_with_revisions = sum(1 for c in self.sample_revision_counts if c > 0)
         revision_rate = (
             samples_with_revisions / self.total_samples
+            if self.total_samples > 0
+            else 0.0
+        )
+        avg_revisions = (
+            sum(self.sample_revision_counts) / self.total_samples
             if self.total_samples > 0
             else 0.0
         )
@@ -115,11 +128,16 @@ class MultiTurnStatisticsCollector:
         return {
             "total_samples": self.total_samples,
             "turn_distribution": dict(turn_distribution),
+            "revision_distribution": dict(revision_distribution),
             "samples_with_revisions": samples_with_revisions,
             "revision_rate": revision_rate,
+            "avg_revisions_per_sample": avg_revisions,
             "avg_turns_per_sample": sum(self.sample_turn_counts) / self.total_samples,
             "max_turns": max(self.sample_turn_counts),
             "min_turns": min(self.sample_turn_counts),
+            "max_revisions": (
+                max(self.sample_revision_counts) if self.sample_revision_counts else 0
+            ),
             "turn_details": turn_summaries,
         }
 
@@ -130,44 +148,76 @@ class MultiTurnStatisticsCollector:
             return
 
         logger.warning("=" * 80)
-        logger.warning("📊 MULTI-TURN STATISTICS SUMMARY")
+        logger.warning("MULTI-TURN STATISTICS SUMMARY")
         logger.warning("=" * 80)
-        logger.warning(f"Total Samples: {stats['total_samples']}")
-        logger.warning(f"Average Turns per Sample: {stats['avg_turns_per_sample']:.2f}")
-        logger.warning(f"Turn Range: {stats['min_turns']} - {stats['max_turns']}")
-        logger.warning("")
-
-        logger.warning("🔄 Revision Statistics:")
+        logger.warning("Total Samples: %s", stats["total_samples"])
         logger.warning(
-            f"  Samples with Revisions: {stats['samples_with_revisions']} / {stats['total_samples']}"
+            "Average Turns per Sample: %.2f", stats["avg_turns_per_sample"]
         )
-        logger.warning(f"  Revision Rate: {stats['revision_rate']:.1%}")
+        logger.warning(
+            "Turn Range: %s - %s", stats["min_turns"], stats["max_turns"]
+        )
         logger.warning("")
 
-        logger.warning("📈 Turn Distribution:")
+        logger.warning("Revision Statistics:")
+        logger.warning(
+            "  Samples with Revisions: %s / %s",
+            stats["samples_with_revisions"],
+            stats["total_samples"],
+        )
+        logger.warning("  Revision Rate: %.1f%%", stats["revision_rate"] * 100.0)
+        logger.warning(
+            "  Avg Revisions per Sample: %.2f", stats["avg_revisions_per_sample"]
+        )
+        logger.warning("  Max Revisions: %s", stats["max_revisions"])
+        logger.warning("  (Revision = tool requested replanning)")
+        logger.warning("")
+
+        logger.warning("Revision Distribution:")
+        for num_revisions, count in sorted(stats["revision_distribution"].items()):
+            pct = 100.0 * count / stats["total_samples"]
+            logger.warning(
+                "  %s revision(s): %4d samples (%.1f%%)",
+                num_revisions,
+                count,
+                pct,
+            )
+        logger.warning("")
+
+        logger.warning("Turn Distribution:")
         for turns, count in sorted(stats["turn_distribution"].items()):
             pct = 100.0 * count / stats["total_samples"]
-            logger.warning(f"  {turns} turn(s): {count:4d} samples ({pct:5.1f}%)")
+            logger.warning(
+                "  %s turn(s): %4d samples (%.1f%%)", turns, count, pct
+            )
+        logger.warning("  (Turn = user input, model output, or tool response)")
         logger.warning("")
 
-        logger.warning("⏱️  Per-Turn Timing Breakdown:")
-        for turn_key, turn_data in sorted(stats["turn_details"].items()):
+        logger.warning("Per-Turn Timing Breakdown:")
+        for _, turn_data in sorted(stats["turn_details"].items()):
             turn_num = turn_data["turn"]
             samples = turn_data["samples"]
-            logger.warning(f"  Turn {turn_num} ({samples} samples):")
+            logger.warning("  Turn %s (%s samples):", turn_num, samples)
             logger.warning(
-                f"    Generation:  avg={turn_data['gen_mean']:.2f}s, min={turn_data['gen_min']:.2f}s, max={turn_data['gen_max']:.2f}s"
+                "    Generation:  avg=%.2fs, min=%.2fs, max=%.2fs",
+                turn_data["gen_mean"],
+                turn_data["gen_min"],
+                turn_data["gen_max"],
             )
             if turn_data["tool_mean"] > 0:
                 logger.warning(
-                    f"    Tool Calls:  avg={turn_data['tool_mean']:.2f}s, min={turn_data['tool_min']:.2f}s, max={turn_data['tool_max']:.2f}s"
+                    "    Tool Calls:  avg=%.2fs, min=%.2fs, max=%.2fs",
+                    turn_data["tool_mean"],
+                    turn_data["tool_min"],
+                    turn_data["tool_max"],
                 )
             logger.warning(
-                f"    Total:       avg={turn_data['total_mean']:.2f}s, min={turn_data['total_min']:.2f}s, max={turn_data['total_max']:.2f}s"
+                "    Total:       avg=%.2fs, min=%.2fs, max=%.2fs",
+                turn_data["total_mean"],
+                turn_data["total_min"],
+                turn_data["total_max"],
             )
         logger.warning("=" * 80)
-
-
 class MultiTurnBatchSynchronizer:
     """
     Synchronizes samples at turn boundaries for batch processing.

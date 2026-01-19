@@ -913,6 +913,7 @@ class AgentLoopWorker:
             stats_dict = {
                 "turn_stats": {},
                 "sample_turn_counts": [],
+                "sample_revision_counts": [],
                 "total_samples": 0,
             }
 
@@ -936,6 +937,9 @@ class AgentLoopWorker:
                         # Copy sample counts
                         stats_dict["sample_turn_counts"].extend(
                             collector.sample_turn_counts
+                        )
+                        stats_dict["sample_revision_counts"].extend(
+                            getattr(collector, "sample_revision_counts", [])
                         )
                         stats_dict["total_samples"] += collector.total_samples
 
