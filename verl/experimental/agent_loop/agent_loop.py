@@ -61,7 +61,12 @@ class AsyncLLMServerManager:
     - Sticky session: send multi-turn chat completions to same server for automatic prefix caching
     """
 
-    def __init__(self, config: DictConfig, server_handles: list[ray.actor.ActorHandle], max_cache_size: int = 10000):
+    def __init__(
+        self,
+        config: DictConfig,
+        server_handles: list[ray.actor.ActorHandle],
+        max_cache_size: int = 10000,
+    ):
         """Initialize the AsyncLLMServerManager.
 
         Args:
@@ -74,7 +79,9 @@ class AsyncLLMServerManager:
         random.shuffle(self.server_handles)
 
         # Least requests load balancing
-        self.weighted_serveres = [[0, idx, server] for idx, server in enumerate(self.server_handles)]
+        self.weighted_serveres = [
+            [0, idx, server] for idx, server in enumerate(self.server_handles)
+        ]
         heapq.heapify(self.weighted_serveres)
 
         # LRU cache to map request_id to server
@@ -220,8 +227,12 @@ class AgentLoopBase(ABC):
         self.processor = processor
         self.dataset_cls = dataset_cls
         self.dataset_config = dataset_config
-        self.apply_chat_template_kwargs = dataset_config.get("apply_chat_template_kwargs", {})
-        self.system_prompt = initialize_system_prompt(self.tokenizer, **self.apply_chat_template_kwargs)
+        self.apply_chat_template_kwargs = dataset_config.get(
+            "apply_chat_template_kwargs", {}
+        )
+        self.system_prompt = initialize_system_prompt(
+            self.tokenizer, **self.apply_chat_template_kwargs
+        )
         self.loop = get_event_loop()
 
     async def process_vision_info(self, messages: list[dict]) -> dict:
@@ -236,7 +247,9 @@ class AgentLoopBase(ABC):
         multi_modal_data = {}
         if self.processor is not None:
             images, videos = await self.dataset_cls.process_vision_info(
-                messages, image_patch_size=self.processor.image_processor.patch_size, config=self.dataset_config
+                messages,
+                image_patch_size=self.processor.image_processor.patch_size,
+                config=self.dataset_config,
             )
             if images is not None:
                 multi_modal_data["images"] = images
@@ -373,16 +386,25 @@ class AgentLoopWorker:
         self.tokenizer = hf_tokenizer(local_path, trust_remote_code=True)
         self.processor = hf_processor(local_path, trust_remote_code=True)
 
-        agent_loop_config_path = config.actor_rollout_ref.rollout.agent.agent_loop_config_path
+        agent_loop_config_path = (
+            config.actor_rollout_ref.rollout.agent.agent_loop_config_path
+        )
         if agent_loop_config_path:
             resolved_path = resolve_config_path(agent_loop_config_path)
             agent_loop_configs = OmegaConf.load(resolved_path)
             for agent_loop_config in agent_loop_configs:
                 _agent_loop_registry[agent_loop_config.name] = agent_loop_config
-        if self.config.actor_rollout_ref.model.get("custom_chat_template", None) is not None:
+        if (
+            self.config.actor_rollout_ref.model.get("custom_chat_template", None)
+            is not None
+        ):
             if self.processor is not None:
-                self.processor.chat_template = self.config.actor_rollout_ref.model.custom_chat_template
-            self.tokenizer.chat_template = self.config.actor_rollout_ref.model.custom_chat_template
+                self.processor.chat_template = (
+                    self.config.actor_rollout_ref.model.custom_chat_template
+                )
+            self.tokenizer.chat_template = (
+                self.config.actor_rollout_ref.model.custom_chat_template
+            )
 
         use_reward_loop = True if self.config.reward_model.use_reward_loop else None
         self.use_reward_loop = use_reward_loop
@@ -393,6 +415,9 @@ class AgentLoopWorker:
                     soft=False,
                 ),
             ).remote(self.config, self.reward_router_address)
+
+        # Cache for agent loop instances to collect statistics
+        self._agent_loop_cache = {}
 
         trace_config = self.config.actor_rollout_ref.rollout.get("trace", {})
         RolloutTraceConfig.init(
@@ -441,14 +466,18 @@ class AgentLoopWorker:
         # by default, we assume it's a single turn agent
         if "agent_name" not in batch.non_tensor_batch:
             default_agent_loop = config.agent.default_agent_loop
-            batch.non_tensor_batch["agent_name"] = np.array([default_agent_loop] * len(batch), dtype=object)
+            batch.non_tensor_batch["agent_name"] = np.array(
+                [default_agent_loop] * len(batch), dtype=object
+            )
 
         if "index" in batch.non_tensor_batch:
             index = batch.non_tensor_batch["index"]
         else:
             index = np.arange(len(batch))
 
-        max_samples_per_worker = RolloutTraceConfig.get_instance().max_samples_per_step_per_worker
+        max_samples_per_worker = (
+            RolloutTraceConfig.get_instance().max_samples_per_step_per_worker
+        )
 
         # For n rollouts per sample, we trace all n rollouts for selected samples
         # Note: This sampling happens per-worker, so total traces = max_samples_per_worker * num_workers * n
@@ -456,16 +485,22 @@ class AgentLoopWorker:
             unique_sample_indices = np.unique(index)
             if max_samples_per_worker < len(unique_sample_indices):
                 selected_samples = set(
-                    np.random.choice(unique_sample_indices, max_samples_per_worker, replace=False).tolist()
+                    np.random.choice(
+                        unique_sample_indices, max_samples_per_worker, replace=False
+                    ).tolist()
                 )
-                traced_indices = set(i for i in range(len(batch)) if index[i] in selected_samples)
+                traced_indices = set(
+                    i for i in range(len(batch)) if index[i] in selected_samples
+                )
             else:
                 traced_indices = set(range(len(batch)))
         else:
             traced_indices = set(range(len(batch)))
 
         trajectory_info = await get_trajectory_info(
-            batch.meta_info.get("global_steps", -1), index.tolist(), batch.meta_info.get("validate", False)
+            batch.meta_info.get("global_steps", -1),
+            index.tolist(),
+            batch.meta_info.get("validate", False),
         )
 
         tasks = []
@@ -474,7 +509,12 @@ class AgentLoopWorker:
             kwargs = {k: v[i] for k, v in batch.non_tensor_batch.items()}
             tasks.append(
                 asyncio.create_task(
-                    self._run_agent_loop(sampling_params, trajectory_info[i], trace=trace_this_sample, **kwargs)
+                    self._run_agent_loop(
+                        sampling_params,
+                        trajectory_info[i],
+                        trace=trace_this_sample,
+                        **kwargs,
+                    )
                 )
             )
         outputs = await asyncio.gather(*tasks)
@@ -500,24 +540,31 @@ class AgentLoopWorker:
             name="agent_loop",
             trace=trace,
         ):
-            assert agent_name in _agent_loop_registry, (
-                f"Agent loop {agent_name} not registered, registered agent loops: {_agent_loop_registry.keys()}"
-            )
+            assert (
+                agent_name in _agent_loop_registry
+            ), f"Agent loop {agent_name} not registered, registered agent loops: {_agent_loop_registry.keys()}"
 
             agent_loop_config = _agent_loop_registry[agent_name]
-            agent_loop = hydra.utils.instantiate(
-                config=agent_loop_config,
-                trainer_config=DictConfigWrap(config=self.config),
-                server_manager=self.server_manager,
-                tokenizer=self.tokenizer,
-                processor=self.processor,
-                dataset_cls=self.dataset_cls,
-                dataset_config=self.config.data,
-            )
+
+            # Cache agent loop instances to collect statistics later
+            if agent_name not in self._agent_loop_cache:
+                self._agent_loop_cache[agent_name] = hydra.utils.instantiate(
+                    config=agent_loop_config,
+                    trainer_config=DictConfigWrap(config=self.config),
+                    server_manager=self.server_manager,
+                    tokenizer=self.tokenizer,
+                    processor=self.processor,
+                    dataset_cls=self.dataset_cls,
+                    dataset_config=self.config.data,
+                )
+
+            agent_loop = self._agent_loop_cache[agent_name]
             output: AgentLoopOutput = await agent_loop.run(sampling_params, **kwargs)
             return await self._agent_loop_postprocess(output, **kwargs)
 
-    async def _agent_loop_postprocess(self, output, **kwargs) -> _InternalAgentLoopOutput:
+    async def _agent_loop_postprocess(
+        self, output, **kwargs
+    ) -> _InternalAgentLoopOutput:
         """Perform post-processing operations on the output of each individual agent loop."""
         output.extra_fields["raw_prompt"] = kwargs["raw_prompt"]
 
@@ -552,7 +599,9 @@ class AgentLoopWorker:
         )
         if prompt_output["input_ids"].dim() == 1:
             prompt_output["input_ids"] = prompt_output["input_ids"].unsqueeze(0)
-            prompt_output["attention_mask"] = prompt_output["attention_mask"].unsqueeze(0)
+            prompt_output["attention_mask"] = prompt_output["attention_mask"].unsqueeze(
+                0
+            )
 
         self.tokenizer.padding_side = "right"
         response_output = self.tokenizer.pad(
@@ -564,7 +613,9 @@ class AgentLoopWorker:
         )
         if response_output["input_ids"].dim() == 1:
             response_output["input_ids"] = response_output["input_ids"].unsqueeze(0)
-            response_output["attention_mask"] = response_output["attention_mask"].unsqueeze(0)
+            response_output["attention_mask"] = response_output[
+                "attention_mask"
+            ].unsqueeze(0)
 
         response_mask_output = self.tokenizer.pad(
             {"input_ids": output.response_mask},
@@ -574,16 +625,28 @@ class AgentLoopWorker:
             return_attention_mask=False,
         )
         if response_mask_output["input_ids"].dim() == 1:
-            response_mask_output["input_ids"] = response_mask_output["input_ids"].unsqueeze(0)
+            response_mask_output["input_ids"] = response_mask_output[
+                "input_ids"
+            ].unsqueeze(0)
 
         response_logprobs = None
         if output.response_logprobs is not None:
-            pad_size = self.config.actor_rollout_ref.rollout.response_length - len(output.response_logprobs)
-            response_logprobs = torch.tensor(output.response_logprobs + [0.0] * pad_size).unsqueeze(0)
+            pad_size = self.config.actor_rollout_ref.rollout.response_length - len(
+                output.response_logprobs
+            )
+            response_logprobs = torch.tensor(
+                output.response_logprobs + [0.0] * pad_size
+            ).unsqueeze(0)
 
-        response_mask = response_mask_output["input_ids"] * response_output["attention_mask"]
-        attention_mask = torch.cat([prompt_output["attention_mask"], response_output["attention_mask"]], dim=1)
-        input_ids = torch.cat([prompt_output["input_ids"], response_output["input_ids"]], dim=1)
+        response_mask = (
+            response_mask_output["input_ids"] * response_output["attention_mask"]
+        )
+        attention_mask = torch.cat(
+            [prompt_output["attention_mask"], response_output["attention_mask"]], dim=1
+        )
+        input_ids = torch.cat(
+            [prompt_output["input_ids"], response_output["input_ids"]], dim=1
+        )
 
         routed_experts = None
         if output.routed_experts is not None:
@@ -594,8 +657,12 @@ class AgentLoopWorker:
             elif isinstance(output.routed_experts, torch.Tensor):
                 experts_tensor = output.routed_experts
             else:
-                raise TypeError(f"Unsupported type for routed_experts: {type(output.routed_experts)}")
-            routed_experts = torch.zeros(1, total_length, layer_num, topk_num, dtype=experts_tensor.dtype)
+                raise TypeError(
+                    f"Unsupported type for routed_experts: {type(output.routed_experts)}"
+                )
+            routed_experts = torch.zeros(
+                1, total_length, layer_num, topk_num, dtype=experts_tensor.dtype
+            )
 
             # Calculate start position: left padding means original prompt starts at the end
             start_pos = prompt_output["input_ids"].shape[1] - len(output.prompt_ids)
@@ -610,7 +677,9 @@ class AgentLoopWorker:
             routed_experts[:, start_pos:end_pos] = experts_tensor.unsqueeze(0)
 
         multi_modal_inputs = self._compute_multi_modal_inputs(output, input_ids)
-        position_ids = self._compute_position_ids(input_ids, attention_mask, multi_modal_inputs)
+        position_ids = self._compute_position_ids(
+            input_ids, attention_mask, multi_modal_inputs
+        )
         await self._compute_score(
             output,
             prompts=prompt_output["input_ids"],
@@ -652,7 +721,9 @@ class AgentLoopWorker:
             videos, video_metadatas = list(videos), list(video_metadatas)
         else:
             video_metadatas = None
-        current_text = self.tokenizer.decode(input_ids.squeeze(0), skip_special_tokens=True)
+        current_text = self.tokenizer.decode(
+            input_ids.squeeze(0), skip_special_tokens=True
+        )
         multi_modal_inputs = self.processor(
             text=[current_text],
             images=images,
@@ -669,11 +740,15 @@ class AgentLoopWorker:
         multi_modal_inputs = dict(multi_modal_inputs.convert_to_tensors("pt"))
         image_grid_thw = multi_modal_inputs.get("image_grid_thw")
         if image_grid_thw is not None:
-            images_seqlens = torch.repeat_interleave(image_grid_thw[:, 1] * image_grid_thw[:, 2], image_grid_thw[:, 0])
+            images_seqlens = torch.repeat_interleave(
+                image_grid_thw[:, 1] * image_grid_thw[:, 2], image_grid_thw[:, 0]
+            )
             multi_modal_inputs["images_seqlens"] = images_seqlens
         return multi_modal_inputs
 
-    def _compute_position_ids(self, input_ids, attention_mask, multi_modal_inputs) -> torch.Tensor:
+    def _compute_position_ids(
+        self, input_ids, attention_mask, multi_modal_inputs
+    ) -> torch.Tensor:
         """Compute position ids for multi-modal inputs."""
         if self.processor is None:
             return compute_position_id_with_mask(attention_mask)  # (1, seq_len)
@@ -688,19 +763,33 @@ class AgentLoopWorker:
             video_grid_thw=video_grid_thw,
             attention_mask=attention_mask,
         )
-        vision_position_ids = vision_position_ids.transpose(0, 1)  # (3, 1, seq_len) => (1, 3, seq_len)
+        vision_position_ids = vision_position_ids.transpose(
+            0, 1
+        )  # (3, 1, seq_len) => (1, 3, seq_len)
 
         valid_mask = attention_mask[0].bool()
         text_position_ids = torch.ones((1, len(input_ids[0])), dtype=torch.long)
         text_position_ids[0, valid_mask] = torch.arange(valid_mask.sum().item())
         text_position_ids = text_position_ids.unsqueeze(0)
-        position_ids = torch.cat((text_position_ids, vision_position_ids), dim=1)  # (1, 4, seq_length)
+        position_ids = torch.cat(
+            (text_position_ids, vision_position_ids), dim=1
+        )  # (1, 4, seq_length)
         return position_ids
 
-    async def _compute_score(self, output, prompts, responses, attention_mask, input_ids, position_ids, kwargs):
+    async def _compute_score(
+        self,
+        output,
+        prompts,
+        responses,
+        attention_mask,
+        input_ids,
+        position_ids,
+        kwargs,
+    ):
         """Compute reward score for single sample."""
         enable_async_reward = (
-            self.reward_router_address is not None and self.config.reward_model.enable_resource_pool
+            self.reward_router_address is not None
+            and self.config.reward_model.enable_resource_pool
         ) or not self.config.reward_model.enable
 
         if output.reward_score is None and enable_async_reward and self.use_reward_loop:
@@ -739,9 +828,13 @@ class AgentLoopWorker:
         position_ids = torch.cat([input.position_ids for input in inputs], dim=0)
         optional_outputs = {}
         if inputs[0].response_logprobs is not None:
-            optional_outputs["rollout_log_probs"] = torch.cat([input.response_logprobs for input in inputs], dim=0)
+            optional_outputs["rollout_log_probs"] = torch.cat(
+                [input.response_logprobs for input in inputs], dim=0
+            )
         if inputs[0].routed_experts is not None:
-            optional_outputs["routed_experts"] = torch.cat([input.routed_experts for input in inputs], dim=0)
+            optional_outputs["routed_experts"] = torch.cat(
+                [input.routed_experts for input in inputs], dim=0
+            )
 
         batch = TensorDict(
             {
@@ -762,15 +855,21 @@ class AgentLoopWorker:
             prompt_length = prompt_ids.size(1)
             response_length = attention_mask[:, prompt_length:].sum(dim=1) - 1
             rm_scores = torch.zeros_like(response_mask, dtype=torch.float32)
-            rm_scores[torch.arange(response_mask.size(0)), response_length] = torch.tensor(scores, dtype=torch.float32)
+            rm_scores[torch.arange(response_mask.size(0)), response_length] = (
+                torch.tensor(scores, dtype=torch.float32)
+            )
             batch["rm_scores"] = rm_scores
 
         non_tensor_batch = {
-            "__num_turns__": np.array([input.num_turns for input in inputs], dtype=np.int32),
+            "__num_turns__": np.array(
+                [input.num_turns for input in inputs], dtype=np.int32
+            ),
         }
 
         # add reward_extra_info to non_tensor_batch
-        reward_extra_infos = [input.extra_fields.get("reward_extra_info", {}) for input in inputs]
+        reward_extra_infos = [
+            input.extra_fields.get("reward_extra_info", {}) for input in inputs
+        ]
         reward_extra_keys = list(reward_extra_infos[0].keys())
         for key in reward_extra_keys:
             non_tensor_batch[key] = np.array([info[key] for info in reward_extra_infos])
@@ -778,7 +877,9 @@ class AgentLoopWorker:
         # Add multi_modal_inputs to non_tensor_batch if any samples have them
         multi_modal_inputs_list = [input.multi_modal_inputs for input in inputs]
         if any(mmi is not None for mmi in multi_modal_inputs_list):
-            non_tensor_batch["multi_modal_inputs"] = np.array(multi_modal_inputs_list, dtype=object)
+            non_tensor_batch["multi_modal_inputs"] = np.array(
+                multi_modal_inputs_list, dtype=object
+            )
 
         metrics = [input.metrics.model_dump() for input in inputs]
         # Collect extra fields from all inputs and convert them to np.ndarray
@@ -795,6 +896,56 @@ class AgentLoopWorker:
             non_tensor_batch=non_tensor_batch,
             meta_info={"metrics": metrics, "reward_extra_keys": reward_extra_keys},
         )
+
+    def get_turn_statistics(self):
+        """
+        Get multi-turn statistics from the agent loop.
+
+        Returns a dictionary with turn statistics if the agent loop supports it,
+        otherwise returns None.
+        """
+        try:
+            from verl.experimental.agent_loop.optimized_tool_agent_loop import (
+                OptimizedToolAgentLoop,
+            )
+
+            # Check if any agent loop has statistics
+            stats_dict = {
+                "turn_stats": {},
+                "sample_turn_counts": [],
+                "total_samples": 0,
+            }
+
+            # Iterate through all agent loops and collect stats
+            for agent_loop_instance in self._agent_loop_cache.values():
+                if isinstance(agent_loop_instance, OptimizedToolAgentLoop):
+                    if (
+                        hasattr(agent_loop_instance, "stats_collector")
+                        and agent_loop_instance.stats_collector
+                    ):
+                        collector = agent_loop_instance.stats_collector
+
+                        # Copy turn statistics
+                        for turn_num, turn_stat in collector.turn_stats.items():
+                            if turn_num not in stats_dict["turn_stats"]:
+                                stats_dict["turn_stats"][turn_num] = turn_stat
+                            else:
+                                # If already exists, we need to merge (shouldn't happen in single worker)
+                                pass
+
+                        # Copy sample counts
+                        stats_dict["sample_turn_counts"].extend(
+                            collector.sample_turn_counts
+                        )
+                        stats_dict["total_samples"] += collector.total_samples
+
+            return stats_dict if stats_dict["total_samples"] > 0 else None
+        except Exception as e:
+            import logging
+
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Failed to get turn statistics: {e}")
+            return None
 
     def create_transferqueue_client(
         self,
@@ -829,7 +980,14 @@ async def get_trajectory_info(step, index, validate):
             rollout_n += 1
         else:
             rollout_n = 0
-        trajectory_info.append({"step": step, "sample_index": index[i], "rollout_n": rollout_n, "validate": validate})
+        trajectory_info.append(
+            {
+                "step": step,
+                "sample_index": index[i],
+                "rollout_n": rollout_n,
+                "validate": validate,
+            }
+        )
     return trajectory_info
 
 
@@ -837,7 +995,10 @@ class AgentLoopManager:
     """Agent loop manager that manages a group of agent loop workers."""
 
     def __init__(
-        self, config: DictConfig, worker_group: RayWorkerGroup = None, rm_resource_pool: RayResourcePool = None
+        self,
+        config: DictConfig,
+        worker_group: RayWorkerGroup = None,
+        rm_resource_pool: RayResourcePool = None,
     ):
         """Initialize agent loop manager.
 
@@ -850,15 +1011,22 @@ class AgentLoopManager:
         self.worker_group = worker_group
         self.reward_model_manager = None
         self.reward_router_address = None
-        if self.config.reward_model.enable and self.config.reward_model.enable_resource_pool:
+        if (
+            self.config.reward_model.enable
+            and self.config.reward_model.enable_resource_pool
+        ):
             from verl.experimental.reward_loop import RewardModelManager
 
-            self.reward_model_manager = RewardModelManager(config.reward_model, rm_resource_pool)
+            self.reward_model_manager = RewardModelManager(
+                config.reward_model, rm_resource_pool
+            )
             self.reward_router_address = self.reward_model_manager.get_router_address()
 
         # for recipe to change
         if not hasattr(self, "rollout_replica_class"):
-            self.rollout_replica_class = get_rollout_replica_class(self.config.actor_rollout_ref.rollout.name)
+            self.rollout_replica_class = get_rollout_replica_class(
+                self.config.actor_rollout_ref.rollout.name
+            )
         if not hasattr(self, "agent_loop_workers_class"):
             self.agent_loop_workers_class = ray.remote(AgentLoopWorker)
 
@@ -894,25 +1062,44 @@ class AgentLoopManager:
             for replica_rank in range(num_replicas)
         ]
         if self.worker_group:
-            self._run_all([server.init_hybrid(self.worker_group) for server in self.rollout_replicas])
+            self._run_all(
+                [
+                    server.init_hybrid(self.worker_group)
+                    for server in self.rollout_replicas
+                ]
+            )
         else:
-            self._run_all([server.init_standalone() for server in self.rollout_replicas])
-        self.server_handles = [server._server_handle for server in self.rollout_replicas]
-        self.server_addresses = [server._server_address for server in self.rollout_replicas]
+            self._run_all(
+                [server.init_standalone() for server in self.rollout_replicas]
+            )
+        self.server_handles = [
+            server._server_handle for server in self.rollout_replicas
+        ]
+        self.server_addresses = [
+            server._server_address for server in self.rollout_replicas
+        ]
 
         print(f"AgentLoopManager: {self.server_addresses}")
 
         # Update Prometheus configuration with server addresses
         if rollout_config.prometheus.enable:
             if rollout_config.disable_log_stats:
-                raise ValueError("PROMETHEUS needs disable_log_stats==False, but it is currently True.")
-            update_prometheus_config(rollout_config.prometheus, self.server_addresses, rollout_config.name)
+                raise ValueError(
+                    "PROMETHEUS needs disable_log_stats==False, but it is currently True."
+                )
+            update_prometheus_config(
+                rollout_config.prometheus, self.server_addresses, rollout_config.name
+            )
 
     def _init_agent_loop_workers(self):
         self.agent_loop_workers = []
         num_workers = self.config.actor_rollout_ref.rollout.agent.num_workers
 
-        node_ids = [node["NodeID"] for node in ray.nodes() if node["Alive"] and node["Resources"].get("CPU", 0) > 0]
+        node_ids = [
+            node["NodeID"]
+            for node in ray.nodes()
+            if node["Alive"] and node["Resources"].get("CPU", 0) > 0
+        ]
         for i in range(num_workers):
             # Round-robin scheduling over the all nodes
             node_id = node_ids[i % len(node_ids)]
@@ -955,7 +1142,9 @@ class AgentLoopManager:
             self.reward_model_manager.sleep()
 
         # calculate performance metrics
-        metrics = [output.meta_info.pop("metrics") for output in outputs]  # List[List[Dict[str, str]]]
+        metrics = [
+            output.meta_info.pop("metrics") for output in outputs
+        ]  # List[List[Dict[str, str]]]
         timing = self._performance_metrics(metrics, output)
         agent_metrics = self._aggregate_agent_metrics(metrics)
 
@@ -964,7 +1153,9 @@ class AgentLoopManager:
             output.meta_info["agent_metrics"] = agent_metrics
         return output
 
-    def _aggregate_agent_metrics(self, metrics: list[list[dict[str, Any]]]) -> dict[str, float]:
+    def _aggregate_agent_metrics(
+        self, metrics: list[list[dict[str, Any]]]
+    ) -> dict[str, float]:
         aggregated = {}
         key_map = {
             "latency": "tool/latency",
@@ -985,10 +1176,16 @@ class AgentLoopManager:
                 aggregated[f"{prefix}/mean"] = float(arr.mean())
         return aggregated
 
-    def _performance_metrics(self, metrics: list[list[dict[str, str]]], output: DataProto) -> dict[str, float]:
+    def _performance_metrics(
+        self, metrics: list[list[dict[str, str]]], output: DataProto
+    ) -> dict[str, float]:
         timing = {}
-        t_generate_sequences = np.array([metric["generate_sequences"] for chunk in metrics for metric in chunk])
-        t_tool_calls = np.array([metric["tool_calls"] for chunk in metrics for metric in chunk])
+        t_generate_sequences = np.array(
+            [metric["generate_sequences"] for chunk in metrics for metric in chunk]
+        )
+        t_tool_calls = np.array(
+            [metric["tool_calls"] for chunk in metrics for metric in chunk]
+        )
         timing["agent_loop/generate_sequences/min"] = t_generate_sequences.min()
         timing["agent_loop/generate_sequences/max"] = t_generate_sequences.max()
         timing["agent_loop/generate_sequences/mean"] = t_generate_sequences.mean()
@@ -1002,8 +1199,12 @@ class AgentLoopManager:
         prompt_length = output.batch["prompts"].shape[1]
         timing["agent_loop/slowest/generate_sequences"] = t_generate_sequences[slowest]
         timing["agent_loop/slowest/tool_calls"] = t_tool_calls[slowest]
-        timing["agent_loop/slowest/prompt_length"] = attention_mask[:prompt_length].sum().item()
-        timing["agent_loop/slowest/response_length"] = attention_mask[prompt_length:].sum().item()
+        timing["agent_loop/slowest/prompt_length"] = (
+            attention_mask[:prompt_length].sum().item()
+        )
+        timing["agent_loop/slowest/response_length"] = (
+            attention_mask[prompt_length:].sum().item()
+        )
 
         return timing
 

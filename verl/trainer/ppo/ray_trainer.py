@@ -459,13 +459,24 @@ class RayPPOTrainer:
 
         num_workers = self.config.data["dataloader_num_workers"]
 
+        # For small datasets (testing), allow drop_last=False to avoid empty dataloaders
+        train_drop_last = self.config.data.get("train_drop_last", True)
+        # Auto-detect if dataset is too small and override drop_last
+        train_batch_size = self.config.data.get(
+            "gen_batch_size", self.config.data.train_batch_size
+        )
+        if len(self.train_dataset) < train_batch_size and train_drop_last:
+            print(
+                f"Warning: Dataset size ({len(self.train_dataset)}) < batch size ({train_batch_size}). "
+                f"Setting drop_last=False to avoid empty dataloader."
+            )
+            train_drop_last = False
+
         self.train_dataloader = StatefulDataLoader(
             dataset=self.train_dataset,
-            batch_size=self.config.data.get(
-                "gen_batch_size", self.config.data.train_batch_size
-            ),
+            batch_size=train_batch_size,
             num_workers=num_workers,
-            drop_last=True,
+            drop_last=train_drop_last,
             collate_fn=collate_fn,
             sampler=train_sampler,
         )
