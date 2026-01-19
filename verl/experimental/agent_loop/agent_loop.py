@@ -905,10 +905,6 @@ class AgentLoopWorker:
         otherwise returns None.
         """
         try:
-            from verl.experimental.agent_loop.optimized_tool_agent_loop import (
-                OptimizedToolAgentLoop,
-            )
-
             # Check if any agent loop has statistics
             stats_dict = {
                 "turn_stats": {},
@@ -918,30 +914,31 @@ class AgentLoopWorker:
             }
 
             # Iterate through all agent loops and collect stats
+            # Don't rely on isinstance - check for stats_collector attribute directly
+            # to support both verl's OptimizedToolAgentLoop and custom implementations
             for agent_loop_instance in self._agent_loop_cache.values():
-                if isinstance(agent_loop_instance, OptimizedToolAgentLoop):
-                    if (
-                        hasattr(agent_loop_instance, "stats_collector")
-                        and agent_loop_instance.stats_collector
-                    ):
-                        collector = agent_loop_instance.stats_collector
+                if (
+                    hasattr(agent_loop_instance, "stats_collector")
+                    and agent_loop_instance.stats_collector
+                ):
+                    collector = agent_loop_instance.stats_collector
 
-                        # Copy turn statistics
-                        for turn_num, turn_stat in collector.turn_stats.items():
-                            if turn_num not in stats_dict["turn_stats"]:
-                                stats_dict["turn_stats"][turn_num] = turn_stat
-                            else:
-                                # If already exists, we need to merge (shouldn't happen in single worker)
-                                pass
+                    # Copy turn statistics
+                    for turn_num, turn_stat in collector.turn_stats.items():
+                        if turn_num not in stats_dict["turn_stats"]:
+                            stats_dict["turn_stats"][turn_num] = turn_stat
+                        else:
+                            # If already exists, we need to merge (shouldn't happen in single worker)
+                            pass
 
-                        # Copy sample counts
-                        stats_dict["sample_turn_counts"].extend(
-                            collector.sample_turn_counts
-                        )
-                        stats_dict["sample_revision_counts"].extend(
-                            getattr(collector, "sample_revision_counts", [])
-                        )
-                        stats_dict["total_samples"] += collector.total_samples
+                    # Copy sample counts
+                    stats_dict["sample_turn_counts"].extend(
+                        collector.sample_turn_counts
+                    )
+                    stats_dict["sample_revision_counts"].extend(
+                        getattr(collector, "sample_revision_counts", [])
+                    )
+                    stats_dict["total_samples"] += collector.total_samples
 
             return stats_dict if stats_dict["total_samples"] > 0 else None
         except Exception as e:

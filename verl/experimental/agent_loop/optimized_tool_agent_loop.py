@@ -9,6 +9,7 @@ This extends VERL's ToolAgentLoop to add:
 
 import logging
 import os
+import time
 from typing import Any, Optional
 
 import ray
@@ -192,20 +193,25 @@ class OptimizedToolAgentLoop(ToolAgentLoop):
         """
         Override generation state handler to add timing and synchronization.
         """
-        # Wrap agent_data if not already wrapped
-        if not isinstance(agent_data, EnhancedAgentData):
-            sample_idx = agent_data.extra_fields.get(
-                "_sample_idx", agent_data.extra_fields.get("index", 0)
-            )
-            agent_data = EnhancedAgentData(agent_data, sample_idx)
+        # Initialize timing data in extra_fields if not present
+        if "_timing_data" not in agent_data.extra_fields:
+            agent_data.extra_fields["_timing_data"] = {
+                "turn_start_times": [],
+                "turn_generation_times": [],
+                "turn_tool_call_times": [],
+                "current_generation_start": None,
+                "current_tool_start": None,
+            }
+
+        timing_data = agent_data.extra_fields["_timing_data"]
 
         # Start turn tracking if this is a new turn
-        if not hasattr(agent_data, "_turn_started") or not agent_data._turn_started:
-            agent_data.start_turn()
-            agent_data._turn_started = True
+        if not agent_data.extra_fields.get("_turn_started", False):
+            timing_data["turn_start_times"].append(time.time())
+            agent_data.extra_fields["_turn_started"] = True
 
         # Start generation timing
-        agent_data.start_generation()
+        timing_data["current_generation_start"] = time.time()
 
         # Call parent implementation
         next_state = await super()._handle_generating_state(
@@ -213,12 +219,16 @@ class OptimizedToolAgentLoop(ToolAgentLoop):
         )
 
         # End generation timing
-        agent_data.end_generation()
+        timing_data = agent_data.extra_fields["_timing_data"]
+        if timing_data["current_generation_start"] is not None:
+            gen_time = time.time() - timing_data["current_generation_start"]
+            timing_data["turn_generation_times"].append(gen_time)
+            timing_data["current_generation_start"] = None
 
         # Record turn statistics if we're moving to tool processing
         if next_state == AgentState.PROCESSING_TOOLS and self.log_turn_statistics:
             turn_num = agent_data.assistant_turns
-            agent_data._pending_turn_record = turn_num
+            agent_data.extra_fields["_pending_turn_record"] = turn_num
 
         # Report turn generation outcome for cross-worker batching
         if self.enable_cross_worker_turn_batching:
@@ -243,12 +253,8 @@ class OptimizedToolAgentLoop(ToolAgentLoop):
         """
         Override tool processing state handler to add timing and synchronization.
         """
-        # Ensure enhanced wrapper
-        if not isinstance(agent_data, EnhancedAgentData):
-            sample_idx = agent_data.extra_fields.get(
-                "_sample_idx", agent_data.extra_fields.get("index", 0)
-            )
-            agent_data = EnhancedAgentData(agent_data, sample_idx)
+        # Get timing data from extra_fields
+        timing_data = agent_data.extra_fields.get("_timing_data", {})
 
         # Wait for turn batch synchronization if enabled
         if self.enable_cross_worker_turn_batching:
@@ -257,9 +263,10 @@ class OptimizedToolAgentLoop(ToolAgentLoop):
                 batch_id, sample_id = self._get_turn_batch_context(agent_data)
                 if batch_id and sample_id:
                     turn_num = agent_data.assistant_turns
+                    sample_idx = agent_data.extra_fields.get("_sample_idx", 0)
                     logger.debug(
                         "Sample %s waiting for cross-worker turn %s batch...",
-                        agent_data.sample_idx,
+                        sample_idx,
                         turn_num,
                     )
                     await coordinator.wait_for_turn.remote(
@@ -269,7 +276,7 @@ class OptimizedToolAgentLoop(ToolAgentLoop):
                     )
                     logger.debug(
                         "Sample %s proceeding with cross-worker turn %s batch",
-                        agent_data.sample_idx,
+                        sample_idx,
                         turn_num,
                     )
         elif self.enable_turn_batching and self.batch_synchronizer:
@@ -277,51 +284,63 @@ class OptimizedToolAgentLoop(ToolAgentLoop):
             total_in_turn = (
                 len(agent_data.tool_calls) if hasattr(agent_data, "tool_calls") else 1
             )
+            sample_idx = agent_data.extra_fields.get("_sample_idx", 0)
             logger.debug(
                 "Sample %s waiting for turn %s batch...",
-                agent_data.sample_idx,
+                sample_idx,
                 turn_num,
             )
             await self.batch_synchronizer.wait_for_turn_batch(
-                agent_data.sample_idx, turn_num, total_in_turn
+                sample_idx, turn_num, total_in_turn
             )
             logger.debug(
                 "Sample %s proceeding with turn %s batch",
-                agent_data.sample_idx,
+                sample_idx,
                 turn_num,
             )
 
         # Start tool call timing
-        agent_data.start_tool_calls()
+        timing_data["current_tool_start"] = time.time()
 
         # Call parent implementation
         next_state = await super()._handle_processing_tools_state(agent_data)
 
         # End tool call timing
-        agent_data.end_tool_calls()
+        if timing_data.get("current_tool_start") is not None:
+            tool_time = time.time() - timing_data["current_tool_start"]
+            timing_data["turn_tool_call_times"].append(tool_time)
+            timing_data["current_tool_start"] = None
+        else:
+            # No tool calls in this turn
+            timing_data["turn_tool_call_times"].append(0.0)
 
         # Record turn statistics
         if self.log_turn_statistics and self.stats_collector:
-            turn_num = getattr(
-                agent_data, "_pending_turn_record", agent_data.assistant_turns
+            turn_num = agent_data.extra_fields.get(
+                "_pending_turn_record", agent_data.assistant_turns
             )
-            if hasattr(agent_data, "_pending_turn_record"):
-                delattr(agent_data, "_pending_turn_record")
+            if "_pending_turn_record" in agent_data.extra_fields:
+                del agent_data.extra_fields["_pending_turn_record"]
 
-            turn_timings = agent_data.get_turn_timings()
-            if turn_timings and len(turn_timings) >= turn_num:
-                timing = turn_timings[turn_num - 1]
+            # Build turn timing from timing_data
+            num_turns = len(timing_data["turn_start_times"])
+            if num_turns >= turn_num:
+                idx = turn_num - 1
+                gen_time = timing_data["turn_generation_times"][idx] if idx < len(timing_data["turn_generation_times"]) else 0.0
+                tool_time = timing_data["turn_tool_call_times"][idx] if idx < len(timing_data["turn_tool_call_times"]) else 0.0
+                
+                sample_idx = agent_data.extra_fields.get("_sample_idx", 0)
                 self.stats_collector.record_turn(
-                    sample_idx=agent_data.sample_idx,
+                    sample_idx=sample_idx,
                     turn_number=turn_num,
-                    generation_time=timing["generation_time"],
-                    tool_call_time=timing["tool_call_time"],
-                    total_time=timing["total_time"],
+                    generation_time=gen_time,
+                    tool_call_time=tool_time,
+                    total_time=gen_time + tool_time,
                 )
 
         # Mark that we need a new turn start if continuing
         if next_state == AgentState.GENERATING:
-            agent_data._turn_started = False
+            agent_data.extra_fields["_turn_started"] = False
 
         if self.enable_cross_worker_turn_batching and next_state == AgentState.TERMINATED:
             coordinator = self._get_turn_batch_coordinator()
