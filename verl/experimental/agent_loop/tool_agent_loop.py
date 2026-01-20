@@ -132,7 +132,7 @@ class ToolAgentLoop(AgentLoopBase):
 
     @rollout_trace_op
     async def run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
-        messages = list(kwargs["raw_prompt"])
+        messages = list(kwargs["raw_prompt"]) # [{"role": "user", "content": "..." }, ...]
 
         # extract images and videos from messages
         multi_modal_data = await self.process_vision_info(messages)
@@ -172,6 +172,13 @@ class ToolAgentLoop(AgentLoopBase):
         )
         if isinstance(extra_info, dict):
             agent_data.extra_fields.update(extra_info)
+            # Log to verify extra_info contains original_data with golden doc IDs
+            original_data = extra_info.get("original_data", {})
+            if original_data:
+                logger.warning(
+                    f"[AGENT_LOOP] request_id={request_id}: Set extra_fields with original_data: "
+                    f"qid={original_data.get('qid')}, golden_docs={len(original_data.get('gold_doc_ids', []))} IDs"
+                )
 
         # State machine loop
         state = AgentState.PENDING

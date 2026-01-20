@@ -209,7 +209,6 @@ class TurnBatchedAgentLoopWorker(AgentLoopWorker):
             sampling_params, trajectory, agent_name=agent_name, trace=trace, **kwargs
         )
 
-
 class SimpleBatchedAgentLoopManager(AgentLoopManager):
     """
     Simpler batching approach: just synchronize worker completion.
@@ -506,8 +505,6 @@ class FullBatchedAgentLoopManager(AgentLoopManager):
     Phase 3: Workers complete with tool results
 
     This gives maximum control but requires custom AgentLoopWorker.
-
-    TODO: Implement this if SimpleBatchedAgentLoopManager is insufficient.
     """
 
     def __init__(
