@@ -49,14 +49,24 @@ class Tracking:
         "file",
     ]
 
-    def __init__(self, project_name, experiment_name, default_backend: str | list[str] = "console", config=None):
+    def __init__(
+        self,
+        project_name,
+        experiment_name,
+        default_backend: str | list[str] = "console",
+        config=None,
+    ):
         if isinstance(default_backend, str):
             default_backend = [default_backend]
         for backend in default_backend:
             if backend == "tracking":
                 import warnings
 
-                warnings.warn("`tracking` logger is deprecated. use `wandb` instead.", DeprecationWarning, stacklevel=2)
+                warnings.warn(
+                    "`tracking` logger is deprecated. use `wandb` instead.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
             else:
                 assert backend in self.supported_backend, f"{backend} is not supported"
 
@@ -71,7 +81,13 @@ class Tracking:
             if config and config["trainer"].get("wandb_proxy", None):
                 settings = wandb.Settings(https_proxy=config["trainer"]["wandb_proxy"])
             entity = os.environ.get("WANDB_ENTITY", None)
-            wandb.init(project=project_name, name=experiment_name, entity=entity, config=config, settings=settings)
+            wandb.init(
+                project=project_name,
+                name=experiment_name,
+                entity=entity,
+                config=config,
+                settings=settings,
+            )
             self.logger["wandb"] = wandb
 
         if "trackio" in default_backend:
@@ -85,7 +101,9 @@ class Tracking:
 
             import mlflow
 
-            MLFLOW_TRACKING_URI = os.environ.get("MLFLOW_TRACKING_URI", "sqlite:////tmp/mlruns.db")
+            MLFLOW_TRACKING_URI = os.environ.get(
+                "MLFLOW_TRACKING_URI", "sqlite:////tmp/mlruns.db"
+            )
             mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
             # Some cloud providers like Azure ML or Databricks automatically set MLFLOW_RUN_ID
@@ -97,7 +115,9 @@ class Tracking:
                 # Project_name is actually experiment_name in MLFlow
                 # If experiment does not exist, will create a new experiment
                 experiment = mlflow.set_experiment(project_name)
-                mlflow.start_run(experiment_id=experiment.experiment_id, run_name=experiment_name)
+                mlflow.start_run(
+                    experiment_id=experiment.experiment_id, run_name=experiment_name
+                )
 
             mlflow.log_params(_compute_mlflow_params_from_objects(config))
             self.logger["mlflow"] = _MlflowLoggingAdapter()
@@ -111,10 +131,14 @@ class Tracking:
             SWANLAB_LOG_DIR = os.environ.get("SWANLAB_LOG_DIR", "swanlog")
             SWANLAB_MODE = os.environ.get("SWANLAB_MODE", "cloud")
             if SWANLAB_API_KEY:
-                swanlab.login(SWANLAB_API_KEY)  # NOTE: previous login information will be overwritten
+                swanlab.login(
+                    SWANLAB_API_KEY
+                )  # NOTE: previous login information will be overwritten
 
             if config is None:
-                config = {}  # make sure config is not None, otherwise **config will raise error
+                config = (
+                    {}
+                )  # make sure config is not None, otherwise **config will raise error
             swanlab.init(
                 project=project_name,
                 experiment_name=experiment_name,
@@ -145,7 +169,9 @@ class Tracking:
             self.logger["vemlp_wandb"] = vemlp_wandb
 
         if "tensorboard" in default_backend:
-            self.logger["tensorboard"] = _TensorboardAdapter(project_name, experiment_name)
+            self.logger["tensorboard"] = _TensorboardAdapter(
+                project_name, experiment_name
+            )
 
         if "console" in default_backend:
             from verl.utils.logger import LocalLogger
@@ -154,7 +180,9 @@ class Tracking:
             self.logger["console"] = self.console_logger
 
         if "clearml" in default_backend:
-            self.logger["clearml"] = ClearMLLogger(project_name, experiment_name, config)
+            self.logger["clearml"] = ClearMLLogger(
+                project_name, experiment_name, config
+            )
 
         if "file" in default_backend:
             self.logger["file"] = FileLogger(project_name, experiment_name)
@@ -261,7 +289,9 @@ class _TensorboardAdapter:
 
         from torch.utils.tensorboard import SummaryWriter
 
-        tensorboard_dir = os.environ.get("TENSORBOARD_DIR", f"tensorboard_log/{project_name}/{experiment_name}")
+        tensorboard_dir = os.environ.get(
+            "TENSORBOARD_DIR", f"tensorboard_log/{project_name}/{experiment_name}"
+        )
         os.makedirs(tensorboard_dir, exist_ok=True)
         print(f"Saving tensorboard log to {tensorboard_dir}.")
         self.writer = SummaryWriter(tensorboard_dir)
@@ -301,7 +331,9 @@ class _MlflowLoggingAdapter:
             sanitized = self._invalid_chars_pattern.sub("_", sanitized)
             if sanitized != key:
                 self.logger.warning(
-                    "[MLflow] Metric key '%s' sanitized to '%s' due to invalid characters.", key, sanitized
+                    "[MLflow] Metric key '%s' sanitized to '%s' due to invalid characters.",
+                    key,
+                    sanitized,
                 )
             return sanitized
 
@@ -313,11 +345,17 @@ def _compute_mlflow_params_from_objects(params) -> dict[str, Any]:
     if params is None:
         return {}
 
-    return _flatten_dict(_transform_params_to_json_serializable(params, convert_list_to_dict=True), sep="/")
+    return _flatten_dict(
+        _transform_params_to_json_serializable(params, convert_list_to_dict=True),
+        sep="/",
+    )
 
 
 def _transform_params_to_json_serializable(x, convert_list_to_dict: bool):
-    _transform = partial(_transform_params_to_json_serializable, convert_list_to_dict=convert_list_to_dict)
+    _transform = partial(
+        _transform_params_to_json_serializable,
+        convert_list_to_dict=convert_list_to_dict,
+    )
 
     if dataclasses.is_dataclass(x):
         return _transform(dataclasses.asdict(x))
@@ -325,7 +363,9 @@ def _transform_params_to_json_serializable(x, convert_list_to_dict: bool):
         return {k: _transform(v) for k, v in x.items()}
     if isinstance(x, list):
         if convert_list_to_dict:
-            return {"list_len": len(x)} | {f"{i}": _transform(v) for i, v in enumerate(x)}
+            return {"list_len": len(x)} | {
+                f"{i}": _transform(v) for i, v in enumerate(x)
+            }
         else:
             return [_transform(v) for v in x]
     if isinstance(x, Path):
@@ -380,7 +420,11 @@ class ValidationGenerationsLogger:
 
         # Create column names for all samples
         columns = ["step"] + sum(
-            [[f"input_{i + 1}", f"output_{i + 1}", f"score_{i + 1}"] for i in range(len(samples))], []
+            [
+                [f"input_{i + 1}", f"output_{i + 1}", f"score_{i + 1}"]
+                for i in range(len(samples))
+            ],
+            [],
         )
 
         if not hasattr(self, "validation_table"):
@@ -438,7 +482,9 @@ class ValidationGenerationsLogger:
                     json.dump(row_data, file)
                 mlflow.log_artifact(validation_gen_step_file)
         except Exception as e:
-            print(f"WARNING: save validation generation file to mlflow failed with error {e}")
+            print(
+                f"WARNING: save validation generation file to mlflow failed with error {e}"
+            )
 
     def log_generations_to_clearml(self, samples, step):
         """Log validation generation to clearml as table"""
@@ -476,7 +522,9 @@ class ValidationGenerationsLogger:
 
             # Use the same directory structure as _TensorboardAdapter
             if self.project_name and self.experiment_name:
-                default_dir = os.path.join("tensorboard_log", self.project_name, self.experiment_name)
+                default_dir = os.path.join(
+                    "tensorboard_log", self.project_name, self.experiment_name
+                )
             else:
                 default_dir = "tensorboard_log"
 
