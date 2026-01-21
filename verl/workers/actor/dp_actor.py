@@ -630,13 +630,32 @@ class DataParallelPPOActor(BasePPOActor):
                         )
                         micro_batch_metrics.update(rollout_corr_metrics)
 
+                    # === DETAILED LOSS LOGGING ===
+                    # Initialize loss components
                     policy_loss = pg_loss
+                    entropy_loss_component = 0.0
+                    kl_loss_component = 0.0
+                    
+                    # Log raw policy gradient loss (before any modifications)
+                    micro_batch_metrics["loss/pg_loss_raw"] = pg_loss.detach().item()
+                    
+                    # Entropy loss component
                     if calculate_entropy and entropy is not None:
                         entropy_agg = agg_loss(loss_mat=entropy, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
+                        # Log raw entropy value
                         micro_batch_metrics["actor/entropy"] = entropy_agg.detach().item()
+                        micro_batch_metrics["loss/entropy_raw"] = entropy_agg.detach().item()
+                        
                         if entropy_coeff != 0:
+                            # Calculate entropy loss component (negative because we subtract)
+                            entropy_loss_component = -entropy_agg * entropy_coeff
                             policy_loss -= entropy_agg * entropy_coeff
+                            
+                            # Log entropy loss details
+                            micro_batch_metrics["loss/entropy_loss"] = entropy_loss_component.detach().item()
+                            micro_batch_metrics["loss/entropy_coef"] = entropy_coeff
 
+                    # KL divergence loss component
                     if self.config.use_kl_loss:
                         ref_log_prob = model_inputs["ref_log_prob"]
                         # compute kl loss
@@ -644,16 +663,37 @@ class DataParallelPPOActor(BasePPOActor):
                             logprob=log_prob, ref_logprob=ref_log_prob, kl_penalty=self.config.kl_loss_type
                         )
                         kl_loss = agg_loss(loss_mat=kld, loss_mask=response_mask, loss_agg_mode=loss_agg_mode)
-
-                        policy_loss = policy_loss + kl_loss * self.config.kl_loss_coef
+                        
+                        # Log raw KL divergence
+                        micro_batch_metrics["loss/kl_divergence_raw"] = kl_loss.detach().item()
+                        
+                        # Calculate KL loss component
+                        kl_loss_component = kl_loss * self.config.kl_loss_coef
+                        policy_loss = policy_loss + kl_loss_component
+                        
+                        # Log KL loss details
+                        micro_batch_metrics["loss/kl_loss"] = kl_loss_component.detach().item()
+                        micro_batch_metrics["loss/kl_coef"] = self.config.kl_loss_coef
                         metrics["actor/kl_loss"] += kl_loss.detach().item() * loss_scale_factor
                         micro_batch_metrics["actor/kl_coef"] = self.config.kl_loss_coef
+                    
+                    # Log total policy loss (after all components)
+                    micro_batch_metrics["loss/policy_loss_total"] = policy_loss.detach().item()
+                    
+                    # Log breakdown of loss components
+                    micro_batch_metrics["loss/breakdown/pg"] = pg_loss.detach().item()
+                    micro_batch_metrics["loss/breakdown/entropy"] = entropy_loss_component.detach().item() if isinstance(entropy_loss_component, torch.Tensor) else entropy_loss_component
+                    micro_batch_metrics["loss/breakdown/kl"] = kl_loss_component.detach().item() if isinstance(kl_loss_component, torch.Tensor) else kl_loss_component
 
                     if self.config.use_dynamic_bsz:
                         # relative to the dynamic bsz
                         loss = policy_loss * loss_scale_factor
                     else:
                         loss = policy_loss * loss_scale_factor
+                    
+                    # Log final scaled loss that will be used for backward
+                    micro_batch_metrics["loss/final_scaled_loss"] = loss.detach().item()
+                    
                     if self.scaler is not None:
                         self.scaler.scale(loss).backward()
                     else:
