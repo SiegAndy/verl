@@ -259,26 +259,26 @@ class ZeroAdvantageFilter:
 
         Returns:
             Dict: Statistics about zero advantages in this batch
-        \"\"\"
+        """
         if not self.config.enable:
             return {
-                \"total_samples\": batch.batch.batch_size[0],
-                \"zero_advantage_total\": 0,
-                \"good_zero_count\": 0,
-                \"bad_zero_count\": 0,
+                "total_samples": batch.batch.batch_size[0],
+                "zero_advantage_total": 0,
+                "good_zero_count": 0,
+                "bad_zero_count": 0,
             }
 
         # Extract data
-        advantages = batch.batch[\"advantages\"]
-        response_mask = batch.batch[\"response_mask\"]
-        uids = batch.non_tensor_batch[\"uid\"]
+        advantages = batch.batch["advantages"]
+        response_mask = batch.batch["response_mask"]
+        uids = batch.non_tensor_batch["uid"]
         rewards = batch.batch.get(
-            \"token_level_rewards\", batch.batch.get(\"token_level_scores\")
+            "token_level_rewards", batch.batch.get("token_level_scores")
         )
 
         if rewards is None:
             raise ValueError(
-                \"Batch must contain either 'token_level_rewards' or 'token_level_scores'\"
+                "Batch must contain either 'token_level_rewards' or 'token_level_scores'"
             )
 
         # Compute sequence-level metrics
@@ -297,16 +297,16 @@ class ZeroAdvantageFilter:
 
         # Return statistics
         return {
-            \"total_samples\": len(uids),
-            \"zero_advantage_total\": int(is_zero_advantage.sum()),
-            \"good_zero_count\": int(is_good_zero.sum()),
-            \"bad_zero_count\": int(is_bad_zero.sum()),
+            "total_samples": len(uids),
+            "zero_advantage_total": int(is_zero_advantage.sum()),
+            "good_zero_count": int(is_good_zero.sum()),
+            "bad_zero_count": int(is_bad_zero.sum()),
         }
 
     def compute_epoch_filter_mask(
         self, uids: List[str], random_state: Optional[np.random.RandomState] = None
     ) -> Tuple[np.ndarray, Dict]:
-        \"\"\"Compute which samples should be included in the next epoch based on current streaks.
+        """Compute which samples should be included in the next epoch based on current streaks.
 
         This is used for epoch-level filtering: before an epoch starts, determine
         which samples to include based on their streak counts from previous epochs.
@@ -319,13 +319,13 @@ class ZeroAdvantageFilter:
             Tuple containing:
                 - keep_mask (np.ndarray): Boolean mask indicating which samples to keep
                 - stats (Dict): Statistics about filtering decision
-        \"\"\"
+        """
         if not self.config.enable:
             return np.ones(len(uids), dtype=bool), {
-                \"total_samples\": len(uids),
-                \"samples_to_filter\": 0,
-                \"samples_to_keep\": len(uids),
-                \"avg_streak_of_filtered\": 0.0,
+                "total_samples": len(uids),
+                "samples_to_filter": 0,
+                "samples_to_keep": len(uids),
+                "avg_streak_of_filtered": 0.0,
             }
 
         if random_state is None:
@@ -358,10 +358,10 @@ class ZeroAdvantageFilter:
         )
 
         stats = {
-            \"total_samples\": total_samples,
-            \"samples_to_filter\": samples_to_filter,
-            \"samples_to_keep\": samples_to_keep,
-            \"avg_streak_of_filtered\": avg_streak_of_filtered,
+            "total_samples": total_samples,
+            "samples_to_filter": samples_to_filter,
+            "samples_to_keep": samples_to_keep,
+            "avg_streak_of_filtered": avg_streak_of_filtered,
         }
 
         return keep_mask, stats
@@ -369,7 +369,7 @@ class ZeroAdvantageFilter:
     def filter_batch(
         self, batch: DataProto, random_state: Optional[np.random.RandomState] = None
     ) -> Tuple[DataProto, Dict]:
-        \"\"\"Apply soft filtering to batch based on zero advantage streaks (step-level filtering).
+        """Apply soft filtering to batch based on zero advantage streaks (step-level filtering).
 
         NOTE: For epoch-level filtering, use update_streaks_from_batch() during training
         and compute_epoch_filter_mask() before the next epoch starts. This filter_batch()
