@@ -17,7 +17,13 @@ from typing import Any, Optional
 
 from verl.base_config import BaseConfig
 
-__all__ = ["AlgoConfig", "FilterGroupsConfig", "KLControlConfig", "RolloutCorrectionConfig"]
+__all__ = [
+    "AlgoConfig",
+    "FilterGroupsConfig",
+    "KLControlConfig",
+    "RolloutCorrectionConfig",
+    "ZeroAdvantageFilterConfig",
+]
 
 
 @dataclass
@@ -54,6 +60,47 @@ class FilterGroupsConfig(BaseConfig):
     enable: bool = False
     metric: Optional[str] = None
     max_num_gen_batches: int = 0
+
+
+@dataclass
+class ZeroAdvantageFilterConfig(BaseConfig):
+    """Configuration for zero advantage soft filtering.
+
+    The inheritance from BaseConfig provides omegaconf.DictConfig-like interface for a dataclass config.
+
+    This filter implements streak-based soft filtering for samples with zero advantages.
+    When a sample has zero advantage repeatedly, the probability of selecting it decreases
+    exponentially using p^{z_i}, where p is a base probability and z_i is the streak counter.
+
+    The filter distinguishes between:
+    - Good zero advantages: positive rewards but zero advantage (model already performing well)
+    - Bad zero advantages: non-positive rewards with zero advantage (no learning signal)
+
+    Args:
+        enable (bool): Whether to enable zero advantage filtering. Default: False
+        p_good_zero (float): Base probability for good zero advantages (positive reward).
+            Probability decreases as p_good_zero^{streak_count}. Range: (0, 1].
+            Default: 0.9 (10% dropout at first zero, 19% at second, etc.)
+        p_bad_zero (float): Base probability for bad zero advantages (non-positive reward).
+            Probability decreases as p_bad_zero^{streak_count}. Range: (0, 1].
+            Default: 0.7 (30% dropout at first zero, 51% at second, etc.)
+        zero_threshold (float): Threshold for considering an advantage as zero.
+            Default: 1e-6 (effectively zero)
+        max_streak (int): Maximum streak count to track. Prevents unbounded growth.
+            Default: 10 (p_bad=0.7 gives ~97% dropout at max_streak)
+        reset_streak_on_nonzero (bool): Whether to reset streak when advantage is non-zero.
+            Default: True
+
+    Reference:
+        Based on ideas from https://arxiv.org/pdf/2506.02177
+    """
+
+    enable: bool = False
+    p_good_zero: float = 0.9
+    p_bad_zero: float = 0.7
+    zero_threshold: float = 1e-6
+    max_streak: int = 10
+    reset_streak_on_nonzero: bool = True
 
 
 @dataclass
@@ -467,6 +514,10 @@ class AlgoConfig(BaseConfig):
         use_pf_ppo (bool): Whether to enable preference feedback PPO.
         pf_ppo (dict[str, Any]): Preference feedback PPO settings.
         filter_groups (Optional[FilterGroupsConfig]): Filter groups configuration, used in DAPO and Entropy
+        zero_advantage_filter (Optional[ZeroAdvantageFilterConfig]): Zero advantage soft filtering configuration.
+            Implements streak-based filtering for samples with consecutive zero advantages.
+            Distinguishes between good zeros (positive reward) and bad zeros (non-positive reward).
+            Set to None to disable, or provide ZeroAdvantageFilterConfig with enable=True.
         rollout_correction (Optional[RolloutCorrectionConfig]): Rollout Correction configuration.
             Addresses off-policy issues from policy mismatch, model staleness, and general distribution shifts.
 
@@ -493,6 +544,7 @@ class AlgoConfig(BaseConfig):
     use_pf_ppo: bool = False
     pf_ppo: dict[str, Any] = field(default_factory=dict)
     filter_groups: Optional[FilterGroupsConfig] = None
+    zero_advantage_filter: Optional[ZeroAdvantageFilterConfig] = None
     # Rollout Correction: corrects off-policy issues (policy mismatch, model staleness, distribution shifts)
     # Set to None to disable, use RolloutCorrectionConfig presets (e.g., .tis(), .mis()), or pass dict
     rollout_correction: Optional[RolloutCorrectionConfig] = None
