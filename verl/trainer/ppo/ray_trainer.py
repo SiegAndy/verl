@@ -441,15 +441,15 @@ class RayPPOTrainer:
             if zero_adv_filter_config.enable:
                 self.zero_advantage_filter = ZeroAdvantageFilter(zero_adv_filter_config)
                 self.zero_advantage_filter_enabled = True
-                logger.info(
+                print(
                     f"Zero advantage filter ENABLED: "
                     f"p_good={zero_adv_filter_config.p_good_zero}, "
                     f"p_bad={zero_adv_filter_config.p_bad_zero}"
                 )
             else:
-                logger.info("Zero advantage filter DISABLED (enable=False in config)")
+                print("Zero advantage filter DISABLED (enable=False in config)")
         else:
-            logger.info("Zero advantage filter DISABLED (not in config)")
+            print("Zero advantage filter DISABLED (not in config)")
 
         self.use_prefix_grouper = self.config.actor_rollout_ref.actor.get(
             "use_prefix_grouper", False
@@ -1237,17 +1237,17 @@ class RayPPOTrainer:
             "agent_loop_manager_class"
         )
         if manager_class_fqn:
-            logger.warning(f"Loading custom AgentLoopManager from: {manager_class_fqn}")
+            print(f"Loading custom AgentLoopManager from: {manager_class_fqn}")
             AgentLoopManager = load_class_from_fqn(
                 manager_class_fqn, "AgentLoopManager"
             )
-            logger.warning(
+            print(
                 f"Custom AgentLoopManager loaded successfully: {AgentLoopManager}"
             )
         else:
             from verl.experimental.agent_loop import AgentLoopManager
 
-            logger.warning("Using default AgentLoopManager")
+            print("Using default AgentLoopManager")
 
         if (
             self.config.reward_model.enable
@@ -1341,7 +1341,7 @@ class RayPPOTrainer:
             filter_local_path = os.path.join(local_global_step_folder, "zero_adv_filter.pt")
             filter_state_dict = self.zero_advantage_filter.state_dict()
             torch.save(filter_state_dict, filter_local_path)
-            logger.info(
+            print(
                 f"Saved zero advantage filter state: "
                 f"{len(self.zero_advantage_filter.streak_tracker)} tracked UIDs"
             )
@@ -1439,12 +1439,12 @@ class RayPPOTrainer:
             if os.path.exists(filter_local_path):
                 filter_state_dict = torch.load(filter_local_path, weights_only=False)
                 self.zero_advantage_filter.load_state_dict(filter_state_dict)
-                logger.info(
+                print(
                     f"Loaded zero advantage filter state: "
                     f"{len(self.zero_advantage_filter.streak_tracker)} tracked UIDs"
                 )
             else:
-                logger.info("Zero advantage filter state not found, starting with fresh trackers")
+                print("Zero advantage filter state not found, starting with fresh trackers")
 
     def _get_filtered_epoch_indices(self, epoch):
         """Compute which dataset indices to use for this epoch based on zero advantage filtering.
@@ -1453,10 +1453,10 @@ class RayPPOTrainer:
             epoch: Current epoch number
             
         Returns:
-            List of indices to use, or None if filtering is disabled
+            Tuple of (filtered_indices, filter_stats) or (None, None) if filtering is disabled
         """
         if not self.zero_advantage_filter_enabled or self.zero_advantage_filter is None:
-            return None
+            return None, None
             
         # Get all sample UIDs from the dataset
         # Assumes dataset returns 'data_source' which contains qid
@@ -1470,7 +1470,7 @@ class RayPPOTrainer:
                 all_uids.append(str(uid))
                 all_indices.append(idx)
             except Exception as e:
-                logger.warning(f"Error accessing dataset index {idx}: {e}")
+                print(f"Error accessing dataset index {idx}: {e}")
                 continue
         
         # Compute filtering mask based on current streaks
@@ -1482,8 +1482,8 @@ class RayPPOTrainer:
         # Get indices to keep
         filtered_indices = [all_indices[i] for i in range(len(all_indices)) if keep_mask[i]]
         
-        # Log filtering decision
-        logger.warning(
+        # Log filtering decision to console
+        print(
             f"Zero Advantage Filter - Epoch {epoch} Filtering: "
             f"Total={filter_stats['total_samples']}, "
             f"ToFilter={filter_stats['samples_to_filter']}, "
@@ -1492,19 +1492,7 @@ class RayPPOTrainer:
             f"AvgStreakFiltered={filter_stats['avg_streak_of_filtered']:.2f}"
         )
         
-        # Log to WandB
-        logger.log(data={
-            "zero_adv_filter/epoch": epoch,
-            "zero_adv_filter/total_samples": filter_stats['total_samples'],
-            "zero_adv_filter/samples_to_filter": filter_stats['samples_to_filter'],
-            "zero_adv_filter/samples_to_keep": filter_stats['samples_to_keep'],
-            "zero_adv_filter/keep_rate": (
-                filter_stats['samples_to_keep'] / filter_stats['total_samples']
-            ),
-            "zero_adv_filter/avg_streak_of_filtered": filter_stats['avg_streak_of_filtered'],
-        }, step=self.global_steps)
-        
-        return filtered_indices
+        return filtered_indices, filter_stats
 
     def _start_profiling(self, do_profile: bool) -> None:
         """Start profiling for all worker groups if profiling is enabled."""
@@ -1851,7 +1839,7 @@ class RayPPOTrainer:
 
         for epoch in range(current_epoch, self.config.trainer.total_epochs):
             # Apply epoch-level filtering: determine which samples to use this epoch
-            filtered_indices = self._get_filtered_epoch_indices(epoch)
+            filtered_indices, epoch_filter_stats = self._get_filtered_epoch_indices(epoch)
             
             if filtered_indices is not None:
                 # Create filtered subset for this epoch
@@ -1868,7 +1856,7 @@ class RayPPOTrainer:
                     collate_fn=self.train_dataloader.collate_fn,
                     shuffle=True,  # Shuffle filtered samples
                 )
-                logger.info(
+                logger.warning(
                     f"Epoch {epoch}: Using filtered dataloader with "
                     f"{len(filtered_dataset)}/{len(self.train_dataset)} samples"
                 )
@@ -2192,7 +2180,7 @@ class RayPPOTrainer:
                     if self.zero_advantage_filter_enabled and self.zero_advantage_filter is not None:
                         streak_stats = self.zero_advantage_filter.update_streaks_from_batch(batch)
                         
-                        # Log streak statistics per epoch (aggregate at end)
+                        # Accumulate streak statistics within epoch
                         if not hasattr(self, '_epoch_streak_stats'):
                             self._epoch_streak_stats = {
                                 'total_samples': 0,
@@ -2204,6 +2192,17 @@ class RayPPOTrainer:
                         self._epoch_streak_stats['zero_advantage_total'] += streak_stats['zero_advantage_total']
                         self._epoch_streak_stats['good_zero_count'] += streak_stats['good_zero_count']
                         self._epoch_streak_stats['bad_zero_count'] += streak_stats['bad_zero_count']
+                        
+                        # Add cumulative epoch metrics to per-step metrics (consistent with other metrics)
+                        epoch_stats = self._epoch_streak_stats
+                        if epoch_stats['total_samples'] > 0:
+                            metrics.update({
+                                "zero_adv/total_samples": epoch_stats['total_samples'],
+                                "zero_adv/zero_advantage_total": epoch_stats['zero_advantage_total'],
+                                "zero_adv/zero_advantage_rate": epoch_stats['zero_advantage_total'] / epoch_stats['total_samples'],
+                                "zero_adv/good_zero_count": epoch_stats['good_zero_count'],
+                                "zero_adv/bad_zero_count": epoch_stats['bad_zero_count'],
+                            })
 
                     # implement critic warmup
                     if self.config.trainer.critic_warmup <= self.global_steps:
@@ -2285,6 +2284,18 @@ class RayPPOTrainer:
                         "training/epoch": epoch,
                     }
                 )
+                
+                # Add epoch-level filter stats (if available) to per-step metrics
+                if epoch_filter_stats is not None:
+                    metrics.update({
+                        "zero_adv_filter/total_samples": epoch_filter_stats['total_samples'],
+                        "zero_adv_filter/samples_to_filter": epoch_filter_stats['samples_to_filter'],
+                        "zero_adv_filter/samples_to_keep": epoch_filter_stats['samples_to_keep'],
+                        "zero_adv_filter/keep_rate": (
+                            epoch_filter_stats['samples_to_keep'] / epoch_filter_stats['total_samples']
+                        ),
+                        "zero_adv_filter/avg_streak_of_filtered": epoch_filter_stats['avg_streak_of_filtered'],
+                    })
                 # collect metrics
                 metrics.update(
                     compute_data_metrics(batch=batch, use_critic=self.use_critic)
@@ -2318,7 +2329,6 @@ class RayPPOTrainer:
                 if isinstance(self.train_dataloader.sampler, AbstractCurriculumSampler):
                     self.train_dataloader.sampler.update(batch=batch)
 
-                # TODO: make a canonical logger that supports various backend
                 logger.log(data=metrics, step=self.global_steps)
 
                 progress_bar.update(1)
@@ -2349,7 +2359,7 @@ class RayPPOTrainer:
                     # The dataset may be changed after each training batch
                     self.train_dataset.on_batch_end(batch=batch)
 
-            # End of epoch - log zero advantage streak statistics
+            # End of epoch - log summary and reset zero advantage streak statistics
             if self.zero_advantage_filter_enabled and hasattr(self, '_epoch_streak_stats'):
                 epoch_stats = self._epoch_streak_stats
                 if epoch_stats['total_samples'] > 0:
@@ -2361,17 +2371,5 @@ class RayPPOTrainer:
                         f"Good={epoch_stats['good_zero_count']}, "
                         f"Bad={epoch_stats['bad_zero_count']}"
                     )
-                    # Log to WandB
-                    logger.log(data={
-                        "zero_adv_epoch/total_samples": epoch_stats['total_samples'],
-                        "zero_adv_epoch/zero_advantage_total": epoch_stats['zero_advantage_total'],
-                        "zero_adv_epoch/zero_advantage_rate": (
-                            epoch_stats['zero_advantage_total'] / epoch_stats['total_samples']
-                        ),
-                        "zero_adv_epoch/good_zero_count": epoch_stats['good_zero_count'],
-                        "zero_adv_epoch/bad_zero_count": epoch_stats['bad_zero_count'],
-                    }, step=self.global_steps)
-                
-                # Reset for next epoch
                 del self._epoch_streak_stats
 
