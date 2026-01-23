@@ -422,7 +422,7 @@ class RayPPOTrainer:
         zero_adv_filter_config = self.config.algorithm.get("zero_advantage_filter")
         self.zero_advantage_filter_enabled = False
         self.zero_advantage_filter = None
-        
+
         if zero_adv_filter_config is not None:
             # Convert dict to ZeroAdvantageFilterConfig if needed
             if isinstance(zero_adv_filter_config, dict):
@@ -436,7 +436,7 @@ class RayPPOTrainer:
                     zero_adv_filter_config = ZeroAdvantageFilterConfig(
                         **zero_adv_filter_config
                     )
-            
+
             # Only create filter if enabled
             if zero_adv_filter_config.enable:
                 self.zero_advantage_filter = ZeroAdvantageFilter(zero_adv_filter_config)
@@ -719,6 +719,18 @@ class RayPPOTrainer:
                     if reward_extra_keys
                     else {}
                 )
+
+                # Debug logging
+                if not hasattr(self, "_logged_reward_extraction"):
+                    self._logged_reward_extraction = False
+                if not self._logged_reward_extraction:
+                    logger.info(
+                        f"DEBUG [_compute_or_extract_reward]: rm_scores path (return_dict=True), "
+                        f"reward_extra_keys={reward_extra_keys}, "
+                        f"reward_extra_info has {len(reward_extra_info)} keys"
+                    )
+                    self._logged_reward_extraction = True
+
                 return {
                     "reward_tensor": reward_tensor,
                     "reward_extra_info": reward_extra_info,
@@ -734,6 +746,26 @@ class RayPPOTrainer:
                     if reward_extra_keys
                     else {}
                 )
+
+                # Debug logging
+                if not hasattr(self, "_logged_reward_extraction_train"):
+                    self._logged_reward_extraction_train = False
+                if not self._logged_reward_extraction_train:
+                    logger.info(
+                        f"DEBUG [_compute_or_extract_reward]: rm_scores path (return_dict=False), "
+                        f"reward_extra_keys={reward_extra_keys}, "
+                        f"reward_extra_infos_dict has {len(reward_extra_infos_dict)} keys"
+                    )
+                    if reward_extra_infos_dict:
+                        sample_key = list(reward_extra_infos_dict.keys())[0]
+                        sample_val = reward_extra_infos_dict[sample_key]
+                        logger.info(
+                            f"DEBUG [_compute_or_extract_reward]: Sample - key='{sample_key}', "
+                            f"len={len(sample_val) if hasattr(sample_val, '__len__') else 'N/A'}, "
+                            f"type={type(sample_val).__name__}"
+                        )
+                    self._logged_reward_extraction_train = True
+
                 return reward_tensor, reward_extra_infos_dict
 
         # Otherwise, compute reward using reward_fn
@@ -1241,9 +1273,7 @@ class RayPPOTrainer:
             AgentLoopManager = load_class_from_fqn(
                 manager_class_fqn, "AgentLoopManager"
             )
-            print(
-                f"Custom AgentLoopManager loaded successfully: {AgentLoopManager}"
-            )
+            print(f"Custom AgentLoopManager loaded successfully: {AgentLoopManager}")
         else:
             from verl.experimental.agent_loop import AgentLoopManager
 
@@ -1337,8 +1367,13 @@ class RayPPOTrainer:
         torch.save(dataloader_state_dict, dataloader_local_path)
 
         # save zero advantage filter state
-        if self.zero_advantage_filter_enabled and self.zero_advantage_filter is not None:
-            filter_local_path = os.path.join(local_global_step_folder, "zero_adv_filter.pt")
+        if (
+            self.zero_advantage_filter_enabled
+            and self.zero_advantage_filter is not None
+        ):
+            filter_local_path = os.path.join(
+                local_global_step_folder, "zero_adv_filter.pt"
+            )
             filter_state_dict = self.zero_advantage_filter.state_dict()
             torch.save(filter_state_dict, filter_local_path)
             print(
@@ -1434,7 +1469,10 @@ class RayPPOTrainer:
             )
 
         # load zero advantage filter state
-        if self.zero_advantage_filter_enabled and self.zero_advantage_filter is not None:
+        if (
+            self.zero_advantage_filter_enabled
+            and self.zero_advantage_filter is not None
+        ):
             filter_local_path = os.path.join(global_step_folder, "zero_adv_filter.pt")
             if os.path.exists(filter_local_path):
                 filter_state_dict = torch.load(filter_local_path, weights_only=False)
@@ -1444,44 +1482,48 @@ class RayPPOTrainer:
                     f"{len(self.zero_advantage_filter.streak_tracker)} tracked UIDs"
                 )
             else:
-                print("Zero advantage filter state not found, starting with fresh trackers")
+                print(
+                    "Zero advantage filter state not found, starting with fresh trackers"
+                )
 
     def _get_filtered_epoch_indices(self, epoch):
         """Compute which dataset indices to use for this epoch based on zero advantage filtering.
-        
+
         Args:
             epoch: Current epoch number
-            
+
         Returns:
             Tuple of (filtered_indices, filter_stats) or (None, None) if filtering is disabled
         """
         if not self.zero_advantage_filter_enabled or self.zero_advantage_filter is None:
             return None, None
-            
+
         # Get all sample UIDs from the dataset
         # Assumes dataset returns 'data_source' which contains qid
         all_uids = []
         all_indices = []
-        
+
         for idx in range(len(self.train_dataset)):
             try:
                 sample = self.train_dataset[idx]
-                uid = sample.get('data_source', f'sample_{idx}')
+                uid = sample.get("data_source", f"sample_{idx}")
                 all_uids.append(str(uid))
                 all_indices.append(idx)
             except Exception as e:
                 print(f"Error accessing dataset index {idx}: {e}")
                 continue
-        
+
         # Compute filtering mask based on current streaks
         keep_mask, filter_stats = self.zero_advantage_filter.compute_epoch_filter_mask(
-            all_uids, 
-            random_state=np.random.RandomState(self.config.trainer.seed + epoch)
+            all_uids,
+            random_state=np.random.RandomState(self.config.trainer.seed + epoch),
         )
-        
+
         # Get indices to keep
-        filtered_indices = [all_indices[i] for i in range(len(all_indices)) if keep_mask[i]]
-        
+        filtered_indices = [
+            all_indices[i] for i in range(len(all_indices)) if keep_mask[i]
+        ]
+
         # Log filtering decision to console
         print(
             f"Zero Advantage Filter - Epoch {epoch} Filtering: "
@@ -1491,7 +1533,7 @@ class RayPPOTrainer:
             f"({100.0 * filter_stats['samples_to_keep'] / filter_stats['total_samples']:.1f}%), "
             f"AvgStreakFiltered={filter_stats['avg_streak_of_filtered']:.2f}"
         )
-        
+
         return filtered_indices, filter_stats
 
     def _start_profiling(self, do_profile: bool) -> None:
@@ -1839,13 +1881,16 @@ class RayPPOTrainer:
 
         for epoch in range(current_epoch, self.config.trainer.total_epochs):
             # Apply epoch-level filtering: determine which samples to use this epoch
-            filtered_indices, epoch_filter_stats = self._get_filtered_epoch_indices(epoch)
-            
+            filtered_indices, epoch_filter_stats = self._get_filtered_epoch_indices(
+                epoch
+            )
+
             if filtered_indices is not None:
                 # Create filtered subset for this epoch
                 from torch.utils.data import Subset
+
                 filtered_dataset = Subset(self.train_dataset, filtered_indices)
-                
+
                 # Create temporary dataloader with filtered dataset
                 # Preserve original dataloader settings
                 epoch_dataloader = StatefulDataLoader(
@@ -1856,14 +1901,15 @@ class RayPPOTrainer:
                     collate_fn=self.train_dataloader.collate_fn,
                     shuffle=True,  # Shuffle filtered samples
                 )
-                logger.warning(
+                print(
                     f"Epoch {epoch}: Using filtered dataloader with "
-                    f"{len(filtered_dataset)}/{len(self.train_dataset)} samples"
+                    f"{len(filtered_dataset)}/{len(self.train_dataset)} samples",
+                    flush=True,
                 )
             else:
                 # No filtering, use original dataloader
                 epoch_dataloader = self.train_dataloader
-                
+
             for batch_dict in epoch_dataloader:
                 if hasattr(self.actor_rollout_wg, "async_calls_finalize_fn_exec"):
                     self.actor_rollout_wg.async_calls_finalize_fn_exec(blocking=False)
@@ -1891,7 +1937,8 @@ class RayPPOTrainer:
                 else:
                     # add random uid to batch (old behavior)
                     batch.non_tensor_batch["uid"] = np.array(
-                        [str(uuid.uuid4()) for _ in range(len(batch.batch))], dtype=object
+                        [str(uuid.uuid4()) for _ in range(len(batch.batch))],
+                        dtype=object,
                     )
 
                 gen_batch = self._get_gen_batch(batch)
@@ -2020,6 +2067,9 @@ class RayPPOTrainer:
                                 )
                             batch = batch.union(reward_tensor)
 
+                        # Initialize reward_extra_infos_dict before computing reward
+                        reward_extra_infos_dict = {}
+
                         # Compute or extract reward for training
                         if self.config.reward_model.launch_reward_fn_async:
                             future_reward = compute_reward_async.remote(
@@ -2031,6 +2081,23 @@ class RayPPOTrainer:
                                     batch, reward_fn=self.reward_fn, return_dict=False
                                 )
                             )
+
+                            # Debug: Log reward extra info extraction
+                            if (
+                                self.global_steps == 0
+                            ):  # Only log on first step to avoid spam
+                                logger.info(
+                                    f"DEBUG [Step {self.global_steps}]: Extracted reward_extra_infos_dict with "
+                                    f"{len(reward_extra_infos_dict)} keys: {list(reward_extra_infos_dict.keys())}"
+                                )
+                                if reward_extra_infos_dict:
+                                    sample_key = list(reward_extra_infos_dict.keys())[0]
+                                    sample_val = reward_extra_infos_dict[sample_key]
+                                    logger.info(
+                                        f"DEBUG [Step {self.global_steps}]: Sample key '{sample_key}' has "
+                                        f"{len(sample_val) if isinstance(sample_val, (list, np.ndarray)) else 'N/A'} values, "
+                                        f"type: {type(sample_val)}"
+                                    )
 
                     # Operating Mode Selection:
                     # - Bypass mode: Sets old_log_probs = rollout_log_probs (2 policies: π_rollout, π_θ)
@@ -2177,32 +2244,58 @@ class RayPPOTrainer:
 
                     # Track zero advantage streaks (for next epoch's filtering)
                     # Only if filter is enabled
-                    if self.zero_advantage_filter_enabled and self.zero_advantage_filter is not None:
-                        streak_stats = self.zero_advantage_filter.update_streaks_from_batch(batch)
-                        
+                    if (
+                        self.zero_advantage_filter_enabled
+                        and self.zero_advantage_filter is not None
+                    ):
+                        streak_stats = (
+                            self.zero_advantage_filter.update_streaks_from_batch(batch)
+                        )
+
                         # Accumulate streak statistics within epoch
-                        if not hasattr(self, '_epoch_streak_stats'):
+                        if not hasattr(self, "_epoch_streak_stats"):
                             self._epoch_streak_stats = {
-                                'total_samples': 0,
-                                'zero_advantage_total': 0,
-                                'good_zero_count': 0,
-                                'bad_zero_count': 0,
+                                "total_samples": 0,
+                                "zero_advantage_total": 0,
+                                "good_zero_count": 0,
+                                "bad_zero_count": 0,
                             }
-                        self._epoch_streak_stats['total_samples'] += streak_stats['total_samples']
-                        self._epoch_streak_stats['zero_advantage_total'] += streak_stats['zero_advantage_total']
-                        self._epoch_streak_stats['good_zero_count'] += streak_stats['good_zero_count']
-                        self._epoch_streak_stats['bad_zero_count'] += streak_stats['bad_zero_count']
-                        
+                        self._epoch_streak_stats["total_samples"] += streak_stats[
+                            "total_samples"
+                        ]
+                        self._epoch_streak_stats[
+                            "zero_advantage_total"
+                        ] += streak_stats["zero_advantage_total"]
+                        self._epoch_streak_stats["good_zero_count"] += streak_stats[
+                            "good_zero_count"
+                        ]
+                        self._epoch_streak_stats["bad_zero_count"] += streak_stats[
+                            "bad_zero_count"
+                        ]
+
                         # Add cumulative epoch metrics to per-step metrics (consistent with other metrics)
                         epoch_stats = self._epoch_streak_stats
-                        if epoch_stats['total_samples'] > 0:
-                            metrics.update({
-                                "zero_adv/total_samples": epoch_stats['total_samples'],
-                                "zero_adv/zero_advantage_total": epoch_stats['zero_advantage_total'],
-                                "zero_adv/zero_advantage_rate": epoch_stats['zero_advantage_total'] / epoch_stats['total_samples'],
-                                "zero_adv/good_zero_count": epoch_stats['good_zero_count'],
-                                "zero_adv/bad_zero_count": epoch_stats['bad_zero_count'],
-                            })
+                        if epoch_stats["total_samples"] > 0:
+                            metrics.update(
+                                {
+                                    "zero_adv/total_samples": epoch_stats[
+                                        "total_samples"
+                                    ],
+                                    "zero_adv/zero_advantage_total": epoch_stats[
+                                        "zero_advantage_total"
+                                    ],
+                                    "zero_adv/zero_advantage_rate": epoch_stats[
+                                        "zero_advantage_total"
+                                    ]
+                                    / epoch_stats["total_samples"],
+                                    "zero_adv/good_zero_count": epoch_stats[
+                                        "good_zero_count"
+                                    ],
+                                    "zero_adv/bad_zero_count": epoch_stats[
+                                        "bad_zero_count"
+                                    ],
+                                }
+                            )
 
                     # implement critic warmup
                     if self.config.trainer.critic_warmup <= self.global_steps:
@@ -2284,18 +2377,29 @@ class RayPPOTrainer:
                         "training/epoch": epoch,
                     }
                 )
-                
+
                 # Add epoch-level filter stats (if available) to per-step metrics
                 if epoch_filter_stats is not None:
-                    metrics.update({
-                        "zero_adv_filter/total_samples": epoch_filter_stats['total_samples'],
-                        "zero_adv_filter/samples_to_filter": epoch_filter_stats['samples_to_filter'],
-                        "zero_adv_filter/samples_to_keep": epoch_filter_stats['samples_to_keep'],
-                        "zero_adv_filter/keep_rate": (
-                            epoch_filter_stats['samples_to_keep'] / epoch_filter_stats['total_samples']
-                        ),
-                        "zero_adv_filter/avg_streak_of_filtered": epoch_filter_stats['avg_streak_of_filtered'],
-                    })
+                    metrics.update(
+                        {
+                            "zero_adv_filter/total_samples": epoch_filter_stats[
+                                "total_samples"
+                            ],
+                            "zero_adv_filter/samples_to_filter": epoch_filter_stats[
+                                "samples_to_filter"
+                            ],
+                            "zero_adv_filter/samples_to_keep": epoch_filter_stats[
+                                "samples_to_keep"
+                            ],
+                            "zero_adv_filter/keep_rate": (
+                                epoch_filter_stats["samples_to_keep"]
+                                / epoch_filter_stats["total_samples"]
+                            ),
+                            "zero_adv_filter/avg_streak_of_filtered": epoch_filter_stats[
+                                "avg_streak_of_filtered"
+                            ],
+                        }
+                    )
                 # collect metrics
                 metrics.update(
                     compute_data_metrics(batch=batch, use_critic=self.use_critic)
@@ -2304,8 +2408,137 @@ class RayPPOTrainer:
                 reward_mean = metrics.get(f"{reward_prefix}/rewards/mean")
                 if reward_mean is not None:
                     metrics.setdefault("train/reward", reward_mean)
+
+                # === LOSS BREAKDOWN LOGGING ===
+                # Aggregate loss component metrics from actor updates
                 if "actor/pg_loss" in metrics:
                     metrics.setdefault("train/loss", metrics["actor/pg_loss"])
+                    # Also log under loss/ namespace for consistency
+                    metrics["train/loss/total"] = metrics["actor/pg_loss"]
+
+                # Log detailed loss breakdown if available
+                if "loss/pg_loss_raw" in metrics:
+                    metrics["train/loss/pg_raw"] = metrics["loss/pg_loss_raw"]
+                if "loss/kl_loss" in metrics:
+                    metrics["train/loss/kl"] = metrics["loss/kl_loss"]
+                if "loss/kl_divergence_raw" in metrics:
+                    metrics["train/loss/kl_divergence"] = metrics[
+                        "loss/kl_divergence_raw"
+                    ]
+                if "loss/entropy_loss" in metrics:
+                    metrics["train/loss/entropy"] = metrics["loss/entropy_loss"]
+                if "loss/policy_loss_total" in metrics:
+                    metrics["train/loss/policy_total"] = metrics[
+                        "loss/policy_loss_total"
+                    ]
+
+                # Log loss breakdown components
+                if "loss/breakdown/pg" in metrics:
+                    metrics["train/loss/breakdown/pg"] = metrics["loss/breakdown/pg"]
+                if "loss/breakdown/entropy" in metrics:
+                    metrics["train/loss/breakdown/entropy"] = metrics[
+                        "loss/breakdown/entropy"
+                    ]
+                if "loss/breakdown/kl" in metrics:
+                    metrics["train/loss/breakdown/kl"] = metrics["loss/breakdown/kl"]
+
+                # Add detailed reward breakdown metrics from reward_extra_infos_dict
+                if reward_extra_infos_dict:
+                    logged_count = 0
+                    skipped_count = 0
+
+                    # Organize metrics by category for better wandb grouping
+                    for key, values in reward_extra_infos_dict.items():
+                        if values is not None and len(values) > 0:
+                            # Convert to numpy array for aggregation
+                            try:
+                                values_array = np.array(values)
+                                # Skip string values or empty arrays
+                                if values_array.dtype.kind in [
+                                    "i",
+                                    "f",
+                                    "u",
+                                ]:  # int, float, unsigned int
+                                    # Determine prefix based on key structure
+                                    # New flattened structure: perf/, plan/, efficiency/, quality/, decision/, latency/, reward/
+                                    if key.startswith(
+                                        (
+                                            "perf/",
+                                            "plan/",
+                                            "efficiency/",
+                                            "quality/",
+                                            "decision/",
+                                            "latency/",
+                                            "reward/",
+                                            "system/",
+                                        )
+                                    ):
+                                        # Already has proper namespace, use as-is
+                                        prefix = f"train/{key}"
+                                    elif key in [
+                                        "recall@10",
+                                        "mrr",
+                                        "num_turns",
+                                        "plan_depth",
+                                        "num_nodes",
+                                        "base_reward",
+                                        "score",
+                                    ]:
+                                        # Legacy keys - keep under train/ for compatibility
+                                        prefix = f"train/{key}"
+                                    else:
+                                        # Default: assume it's a reward metric
+                                        prefix = f"train/reward/{key}"
+
+                                    metrics[f"{prefix}/mean"] = float(
+                                        np.mean(values_array)
+                                    )
+                                    metrics[f"{prefix}/max"] = float(
+                                        np.max(values_array)
+                                    )
+                                    metrics[f"{prefix}/min"] = float(
+                                        np.min(values_array)
+                                    )
+                                    metrics[f"{prefix}/std"] = float(
+                                        np.std(values_array)
+                                    )
+                                    logged_count += 1
+                                else:
+                                    skipped_count += 1
+                            except (TypeError, ValueError) as e:
+                                skipped_count += 1
+                                if self.global_steps == 0:
+                                    logger.warning(
+                                        f"DEBUG: Skipped reward metric '{key}' due to error: {e}"
+                                    )
+
+                    # Log summary on first step
+                    if self.global_steps == 0:
+                        logger.info(
+                            f"DEBUG [Step {self.global_steps}]: Logged {logged_count} metric groups "
+                            f"(each with mean/max/min/std), skipped {skipped_count} non-numeric metrics"
+                        )
+                        # Log categorized samples
+                        reward_keys = [k for k in metrics.keys() if "/reward/" in k][:5]
+                        format_keys = [k for k in metrics.keys() if "/format/" in k][:5]
+                        perf_keys = [k for k in metrics.keys() if "/performance/" in k][
+                            :5
+                        ]
+                        logger.info(
+                            f"DEBUG [Step {self.global_steps}]: Sample reward metrics: {reward_keys}"
+                        )
+                        logger.info(
+                            f"DEBUG [Step {self.global_steps}]: Sample format metrics: {format_keys}"
+                        )
+                        logger.info(
+                            f"DEBUG [Step {self.global_steps}]: Sample performance metrics: {perf_keys}"
+                        )
+                else:
+                    if self.global_steps == 0:
+                        logger.warning(
+                            f"DEBUG [Step {self.global_steps}]: reward_extra_infos_dict is EMPTY! "
+                            f"No detailed reward metrics will be logged. Check if batch.meta_info['reward_extra_keys'] exists."
+                        )
                 metrics.update(
                     compute_timing_metrics(batch=batch, timing_raw=timing_raw)
                 )
@@ -2360,16 +2593,18 @@ class RayPPOTrainer:
                     self.train_dataset.on_batch_end(batch=batch)
 
             # End of epoch - log summary and reset zero advantage streak statistics
-            if self.zero_advantage_filter_enabled and hasattr(self, '_epoch_streak_stats'):
+            if self.zero_advantage_filter_enabled and hasattr(
+                self, "_epoch_streak_stats"
+            ):
                 epoch_stats = self._epoch_streak_stats
-                if epoch_stats['total_samples'] > 0:
-                    logger.warning(
+                if epoch_stats["total_samples"] > 0:
+                    print(
                         f"Zero Advantage Epoch {epoch} Summary: "
                         f"Total={epoch_stats['total_samples']}, "
                         f"ZeroAdv={epoch_stats['zero_advantage_total']} "
                         f"({100.0 * epoch_stats['zero_advantage_total'] / epoch_stats['total_samples']:.1f}%), "
                         f"Good={epoch_stats['good_zero_count']}, "
-                        f"Bad={epoch_stats['bad_zero_count']}"
+                        f"Bad={epoch_stats['bad_zero_count']}",
+                        flush=True,
                     )
                 del self._epoch_streak_stats
-

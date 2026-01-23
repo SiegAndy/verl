@@ -870,7 +870,7 @@ class AgentLoopWorker:
         reward_extra_infos = [
             input.extra_fields.get("reward_extra_info", {}) for input in inputs
         ]
-        
+
         # Defensive check: ensure all reward_extra_infos have consistent keys
         # and handle missing 'score' key with default -1.0 reward
         if reward_extra_infos:
@@ -878,38 +878,46 @@ class AgentLoopWorker:
             all_reward_keys = set()
             for info in reward_extra_infos:
                 all_reward_keys.update(info.keys())
-            
+
             reward_extra_keys = list(all_reward_keys)
-            
+
             # Track entries with missing 'score' key for logging
             missing_score_entries = []
             for idx, info in enumerate(reward_extra_infos):
-                if 'score' not in info:
+                if "score" not in info:
                     # Get qid and rollout number from extra_fields if available
-                    qid = inputs[idx].extra_fields.get('original_data', {}).get('qid', f'unknown_idx_{idx}')
-                    missing_score_entries.append({
-                        'index': idx,
-                        'qid': qid,
-                        'reward_extra_info_keys': list(info.keys()),
-                    })
+                    qid = (
+                        inputs[idx]
+                        .extra_fields.get("original_data", {})
+                        .get("qid", f"unknown_idx_{idx}")
+                    )
+                    missing_score_entries.append(
+                        {
+                            "index": idx,
+                            "qid": qid,
+                            "reward_extra_info_keys": list(info.keys()),
+                        }
+                    )
                     # Set default score to -1.0 for missing entries
-                    info['score'] = -1.0
+                    info["score"] = -1.0
                     logger.warning(
                         f"Missing 'score' key in reward_extra_info for rollout index={idx}, qid={qid}. "
                         f"Available keys: {list(info.keys())}. Setting score=-1.0"
                     )
-            
+
             # Log summary if any missing scores were found
             if missing_score_entries:
                 logger.error(
                     f"Found {len(missing_score_entries)} rollout(s) with missing 'score' key out of {len(reward_extra_infos)} total. "
                     f"Details: {missing_score_entries}"
                 )
-            
+
             # Now safely construct arrays for each key
             for key in reward_extra_keys:
                 # Use .get() with default None to handle missing keys gracefully
-                non_tensor_batch[key] = np.array([info.get(key, None) for info in reward_extra_infos])
+                non_tensor_batch[key] = np.array(
+                    [info.get(key, None) for info in reward_extra_infos]
+                )
         else:
             reward_extra_keys = []
 
