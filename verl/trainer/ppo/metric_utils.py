@@ -148,11 +148,21 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
 
     non_aborted_response_length = response_length[non_aborted_mask]
     if non_aborted_response_length.numel() > 0:
-        non_aborted_response_length_mean = torch.mean(non_aborted_response_length).detach().item()
-        non_aborted_response_length_max = torch.max(non_aborted_response_length).detach().item()
-        non_aborted_response_length_min = torch.min(non_aborted_response_length).detach().item()
+        non_aborted_response_length_mean = (
+            torch.mean(non_aborted_response_length).detach().item()
+        )
+        non_aborted_response_length_max = (
+            torch.max(non_aborted_response_length).detach().item()
+        )
+        non_aborted_response_length_min = (
+            torch.min(non_aborted_response_length).detach().item()
+        )
         non_aborted_response_length_clip_ratio = (
-            torch.mean(torch.eq(non_aborted_response_length, max_response_length).float()).detach().item()
+            torch.mean(
+                torch.eq(non_aborted_response_length, max_response_length).float()
+            )
+            .detach()
+            .item()
         )
     else:
         raise ValueError("All samples are aborted, this should not happen.")
@@ -182,7 +192,9 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
                 "critic/values/max": torch.max(valid_values).detach().item(),
                 "critic/values/min": torch.min(valid_values).detach().item(),
                 # vf explained var
-                "critic/vf_explained_var": (1.0 - return_diff_var / (return_var + 1e-5)).detach().item(),
+                "critic/vf_explained_var": (1.0 - return_diff_var / (return_var + 1e-5))
+                .detach()
+                .item(),
             }
             if use_critic
             else {}
@@ -191,7 +203,9 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
         "response_length/mean": torch.mean(response_length).detach().item(),
         "response_length/max": torch.max(response_length).detach().item(),
         "response_length/min": torch.min(response_length).detach().item(),
-        "response_length/clip_ratio": torch.mean(torch.eq(response_length, max_response_length).float())
+        "response_length/clip_ratio": torch.mean(
+            torch.eq(response_length, max_response_length).float()
+        )
         .detach()
         .item(),
         # response length (non-aborted only)
@@ -207,7 +221,11 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
         "prompt_length/mean": torch.mean(prompt_length).detach().item(),
         "prompt_length/max": torch.max(prompt_length).detach().item(),
         "prompt_length/min": torch.min(prompt_length).detach().item(),
-        "prompt_length/clip_ratio": torch.mean(torch.eq(prompt_length, max_prompt_length).float()).detach().item(),
+        "prompt_length/clip_ratio": torch.mean(
+            torch.eq(prompt_length, max_prompt_length).float()
+        )
+        .detach()
+        .item(),
     }
 
     # multi-turn conversation
@@ -223,10 +241,56 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
         metrics["tool_call_counts/max"] = tool_call_counts.max()
         metrics["tool_call_counts/mean"] = tool_call_counts.mean()
 
+    # Compute per-group advantage statistics (max reward - mean reward per group)
+    # This measures how much better the best sample is compared to the average for each prompt
+    if "uid" in batch.non_tensor_batch:
+        from collections import defaultdict
+
+        index = batch.non_tensor_batch["uid"]
+        id2reward = defaultdict(list)
+
+        # Group rewards by prompt index
+        for i in range(len(sequence_reward)):
+            if non_aborted_mask[i]:  # Only include non-aborted samples
+                id2reward[index[i]].append(sequence_reward[i].item())
+
+        # Compute per-group advantage (max - mean)
+        per_group_advantages = []
+        per_group_max_rewards = []
+        per_group_mean_rewards = []
+
+        for idx, rewards in id2reward.items():
+            if len(rewards) > 1:
+                max_reward = max(rewards)
+                mean_reward = sum(rewards) / len(rewards)
+                advantage = max_reward - mean_reward
+                per_group_advantages.append(advantage)
+                per_group_max_rewards.append(max_reward)
+                per_group_mean_rewards.append(mean_reward)
+
+        # Log statistics about per-group advantages
+        if per_group_advantages:
+            import numpy as np
+
+            metrics[f"{prefix}/per_group_advantage/mean"] = np.mean(
+                per_group_advantages
+            )
+            metrics[f"{prefix}/per_group_advantage/max"] = np.max(per_group_advantages)
+            metrics[f"{prefix}/per_group_advantage/min"] = np.min(per_group_advantages)
+            metrics[f"{prefix}/per_group_advantage/std"] = np.std(per_group_advantages)
+            metrics[f"{prefix}/per_group_max_reward/mean"] = np.mean(
+                per_group_max_rewards
+            )
+            metrics[f"{prefix}/per_group_mean_reward/mean"] = np.mean(
+                per_group_mean_rewards
+            )
+
     return metrics
 
 
-def compute_timing_metrics(batch: DataProto, timing_raw: dict[str, float]) -> dict[str, Any]:
+def compute_timing_metrics(
+    batch: DataProto, timing_raw: dict[str, float]
+) -> dict[str, Any]:
     """
     Computes timing metrics for different processing stages in PPO training.
 
@@ -256,19 +320,26 @@ def compute_timing_metrics(batch: DataProto, timing_raw: dict[str, float]) -> di
 
     num_tokens_of_section = {
         "gen": num_response_tokens,
-        **{name: num_overall_tokens for name in ["ref", "values", "adv", "update_critic", "update_actor"]},
+        **{
+            name: num_overall_tokens
+            for name in ["ref", "values", "adv", "update_critic", "update_actor"]
+        },
     }
 
     return {
         **{f"timing_s/{name}": value for name, value in timing_raw.items()},
         **{
-            f"timing_per_token_ms/{name}": timing_raw[name] * 1000 / num_tokens_of_section[name]
+            f"timing_per_token_ms/{name}": timing_raw[name]
+            * 1000
+            / num_tokens_of_section[name]
             for name in set(num_tokens_of_section.keys()) & set(timing_raw.keys())
         },
     }
 
 
-def compute_throughout_metrics(batch: DataProto, timing_raw: dict[str, float], n_gpus: int) -> dict[str, Any]:
+def compute_throughout_metrics(
+    batch: DataProto, timing_raw: dict[str, float], n_gpus: int
+) -> dict[str, Any]:
     """
     Computes throughput metrics for PPO training.
 
@@ -304,7 +375,9 @@ def compute_throughout_metrics(batch: DataProto, timing_raw: dict[str, float], n
     }
 
 
-def compute_variance_proxy_metrics(batch: DataProto, gradient_norm: float = None) -> dict[str, float]:
+def compute_variance_proxy_metrics(
+    batch: DataProto, gradient_norm: float = None
+) -> dict[str, float]:
     """
     Compute variance proxy metrics using the simplified expected squared norm approach.
 
@@ -322,7 +395,11 @@ def compute_variance_proxy_metrics(batch: DataProto, gradient_norm: float = None
     metrics = {}
 
     # Check if we have the necessary data (sum_pi_squared is required for W-score)
-    if "sum_pi_squared" not in batch.batch or "old_log_probs" not in batch.batch or "advantages" not in batch.batch:
+    if (
+        "sum_pi_squared" not in batch.batch
+        or "old_log_probs" not in batch.batch
+        or "advantages" not in batch.batch
+    ):
         return metrics
 
     # Compute W(τ) = Σ_t[1 - 2π_t(y_t) + Σπ²]
@@ -365,16 +442,22 @@ def compute_variance_proxy_metrics(batch: DataProto, gradient_norm: float = None
     # Measures the average of squared gradient norms (Signal + Noise)
     if rollout_is_weights is not None:
         # Off-policy with IS correction applied: use clamped weights consistently with actual gradient computation
-        rollout_is_weights_scalar = verl_F.masked_mean(rollout_is_weights, response_mask, axis=-1)
+        rollout_is_weights_scalar = verl_F.masked_mean(
+            rollout_is_weights, response_mask, axis=-1
+        )
         # Recover original W (before IS correction was applied in line 657)
         # Clamp to avoid division by zero when IS weights are zero
         w_original = verl_F.masked_sum(
-            w_per_timestep / torch.clamp((rollout_is_weights**2).detach(), min=1e-10), response_mask, axis=-1
+            w_per_timestep / torch.clamp((rollout_is_weights**2).detach(), min=1e-10),
+            response_mask,
+            axis=-1,
         )
         # Clamp W to avoid negative values (which would cause NaN in sqrt)
         w_original = torch.clamp(w_original, min=0.0)
         # Proxy 2 for off-policy: E[ρ̄² × A² × W]
-        proxy2_total_power = ((rollout_is_weights_scalar**2) * (advantages_scalar**2) * w_original).mean()
+        proxy2_total_power = (
+            (rollout_is_weights_scalar**2) * (advantages_scalar**2) * w_original
+        ).mean()
 
     else:
         # On-policy Proxy 2: E[A² × W]
@@ -389,10 +472,17 @@ def compute_variance_proxy_metrics(batch: DataProto, gradient_norm: float = None
     if proxy1_signal_strength is not None:
         batch_size = advantages_scalar.shape[0]
         if batch_size > 1:
-            proxy3_pure_noise = (1.0 / (batch_size - 1)) * (proxy2_total_power - proxy1_signal_strength)
+            proxy3_pure_noise = (1.0 / (batch_size - 1)) * (
+                proxy2_total_power - proxy1_signal_strength
+            )
             # Ensure non-negative (can be negative due to numerical errors)
             proxy3_pure_noise = max(
-                0.0, proxy3_pure_noise.item() if torch.is_tensor(proxy3_pure_noise) else proxy3_pure_noise
+                0.0,
+                (
+                    proxy3_pure_noise.item()
+                    if torch.is_tensor(proxy3_pure_noise)
+                    else proxy3_pure_noise
+                ),
             )
 
     # Decompose into components for analysis
@@ -408,7 +498,9 @@ def compute_variance_proxy_metrics(batch: DataProto, gradient_norm: float = None
             # Proxy 2: Total Power E[||ĝ_τ||²]
             "variance_proxy/proxy2_total_power": proxy2_total_power.detach().item(),
             # Proxy 3: Pure Noise - Variance of Mean Vector
-            "variance_proxy/proxy3_pure_noise": proxy3_pure_noise if proxy3_pure_noise is not None else 0.0,
+            "variance_proxy/proxy3_pure_noise": (
+                proxy3_pure_noise if proxy3_pure_noise is not None else 0.0
+            ),
             # Component metrics for debugging
             "variance_proxy/expected_a_squared": expected_a_squared.detach().item(),
             "variance_proxy/expected_w": expected_w.detach().item(),
@@ -453,7 +545,9 @@ def bootstrap_metric(
     n_data = len(data_np)
 
     # generate bootstrap indices, shape: (n_bootstrap, subset_size)
-    bootstrap_idxs = np.random.choice(n_data, size=(n_bootstrap, subset_size), replace=True)
+    bootstrap_idxs = np.random.choice(
+        n_data, size=(n_bootstrap, subset_size), replace=True
+    )
 
     # pre-allocate result array, shape: (n_fns, n_bootstrap)
     n_fns = len(reduce_fns)
@@ -468,7 +562,8 @@ def bootstrap_metric(
 
     # compute mean and std for each metric function
     result = [
-        (float(np.mean(metric_results[fn_idx])), float(np.std(metric_results[fn_idx]))) for fn_idx in range(n_fns)
+        (float(np.mean(metric_results[fn_idx])), float(np.std(metric_results[fn_idx])))
+        for fn_idx in range(n_fns)
     ]
     return result
 
@@ -510,7 +605,10 @@ def calc_maj_val(data: list[dict[str, Any]], vote_key: str, val_key: str) -> flo
 
 
 def process_validation_metrics(
-    data_sources: list[str], sample_uids: list[str], infos_dict: dict[str, list[Any]], seed: int = 42
+    data_sources: list[str],
+    sample_uids: list[str],
+    infos_dict: dict[str, list[Any]],
+    seed: int = 42,
 ) -> dict[str, dict[str, dict[str, float]]]:
     """
     Process validation metrics into a structured format with statistical analysis.
@@ -629,13 +727,18 @@ def process_validation_metrics(
                         if has_pred:
                             # create vote_data
                             vote_data = [
-                                {"val": val, "pred": pred} for val, pred in zip(var_vals, pred_vals, strict=True)
+                                {"val": val, "pred": pred}
+                                for val, pred in zip(var_vals, pred_vals, strict=True)
                             ]
                             # compute maj metrics
                             [(maj_n_mean, maj_n_std)] = bootstrap_metric(
                                 data=vote_data,
                                 subset_size=n,
-                                reduce_fns=[partial(calc_maj_val, vote_key="pred", val_key="val")],
+                                reduce_fns=[
+                                    partial(
+                                        calc_maj_val, vote_key="pred", val_key="val"
+                                    )
+                                ],
                                 n_bootstrap=n_bootstrap,
                                 seed=seed,
                             )
@@ -645,16 +748,24 @@ def process_validation_metrics(
                 var_dict[var_name] = metric
 
     # Aggregate metrics across uids
-    data_src2var2metric2uid_vals = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    data_src2var2metric2uid_vals = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(list))
+    )
     for data_source, uid2var2metric in data_src2uid2var2metric.items():
         for uid, var2metric in uid2var2metric.items():
             for var_name, metric in var2metric.items():
                 for metric_name, metric_val in metric.items():
-                    data_src2var2metric2uid_vals[data_source][var_name][metric_name].append(metric_val)
+                    data_src2var2metric2uid_vals[data_source][var_name][
+                        metric_name
+                    ].append(metric_val)
 
-    data_src2var2metric2val = defaultdict(lambda: defaultdict(lambda: defaultdict(float)))
+    data_src2var2metric2val = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(float))
+    )
     for data_source, var2metric2uid_vals in data_src2var2metric2uid_vals.items():
         for var_name, metric2uid_vals in var2metric2uid_vals.items():
             for metric_name, uid_vals in metric2uid_vals.items():
-                data_src2var2metric2val[data_source][var_name][metric_name] = np.mean(uid_vals)
+                data_src2var2metric2val[data_source][var_name][metric_name] = np.mean(
+                    uid_vals
+                )
     return data_src2var2metric2val

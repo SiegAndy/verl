@@ -51,8 +51,23 @@ def main(config):
         config.trainer.experiment_name = f"{config.trainer.experiment_name}_{timestamp}"
 
     # Set wandb run_name to match experiment_name if not explicitly set
+    # Include training settings: batch size, rollouts, and learning rate
     if config.wandb.get("run_name") is None:
-        config.wandb.run_name = config.trainer.experiment_name
+        # Extract key training hyperparameters
+        batch_size = config.data.get("train_batch_size", "unknown")
+        n_rollouts = config.actor_rollout_ref.rollout.get("n", "unknown")
+        lr = config.actor_rollout_ref.actor.optim.get("lr", "unknown")
+
+        # Format learning rate in scientific notation (e.g., 1e-6)
+        if isinstance(lr, (int, float)):
+            lr_str = f"{lr:.0e}".replace("e-0", "e-")  # 1e-06 -> 1e-6
+        else:
+            lr_str = str(lr)
+
+        # Build run name with settings
+        config.wandb.run_name = (
+            f"{config.trainer.experiment_name}_bs{batch_size}_n{n_rollouts}_lr{lr_str}"
+        )
 
     # Automatically set `config.trainer.device = npu` when running on Ascend NPU.
     auto_set_device(config)
