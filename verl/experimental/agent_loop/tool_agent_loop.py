@@ -45,6 +45,66 @@ logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 
+# Canonical metrics structure to ensure consistency across all workers
+# Matches the structure in pipeline_tool.py
+CANONICAL_METRICS = {
+    # Performance metrics (main results)
+    "perf/recall@10": 0.0,
+    "perf/mrr": 0.0,
+    "perf/recall@10_weighted": 0.0,
+    "perf/mrr_weighted": 0.0,
+    "recall@10": 0.0,
+    "mrr": 0.0,
+    # Plan structure metrics
+    "plan/depth": 0,
+    "plan/num_nodes": 0,
+    "plan/breadth": 0,
+    "plan/avg_complexity": 0.0,
+    "plan_depth": 0,
+    "num_nodes": 0,
+    # Quality/format metrics
+    "quality/passed_validation": 0.0,
+    "quality/failure_modes": 0,
+    "quality/score": 0.0,
+    # Decision metrics
+    "decision/keep_rate": 0.0,
+    "decision/revise_rate": 0.0,
+    "decision/conclude_rate": 0.0,
+    # Latency metrics
+    "latency/server_ms": 0.0,
+    "latency/client_ms": 0.0,
+    "latency/total_ms": 0.0,
+    "latency": 0.0,
+    "tool_client_latency": 0.0,
+    # Reward metrics
+    "tool_reward": 0.0,
+    "tool/reward/base": 0.0,
+    # System/error metrics
+    "system/execution_errors": 0.0,
+    "system/server_used": "none",
+    "tool_execution_error": 0.0,
+    "tool_error": "",  # Empty string for no error
+    "server_used": "none",
+    # Tool-specific performance
+    "tool/performance/recall@10": 0.0,
+    "tool/performance/mrr": 0.0,
+    # Tool-specific format
+    "tool/format/plan_depth": 0,
+    "tool/format/num_nodes": 0,
+    "tool/format/passed_hard_gate": 0.0,
+    "tool/format/num_failure_modes": 0,
+    "tool/format/quality": 0.0,
+    # Tool-specific decision
+    "tool/decision/is_keep": 0.0,
+    "tool/decision/is_revise": 0.0,
+    "tool/decision/is_conclude": 0.0,
+    # Tool-specific latency
+    "tool/latency/server": 0.0,
+    "tool/latency/client": 0.0,
+    "tool/latency/total": 0.0,
+}
+
+
 class AgentState(Enum):
     PENDING = "pending"
     GENERATING = "generating"
@@ -325,41 +385,18 @@ class ToolAgentLoop(AgentLoopBase):
                 parse_error,
                 response_text,
             )
-            # Add complete metrics dict with error values for consistency with success path
-            agent_data.metrics.update(
+            # Use canonical metrics with error-specific overrides for consistency
+            metrics_update = CANONICAL_METRICS.copy()
+            metrics_update.update(
                 {
                     "tool_error": parse_error,
-                    "tool_execution_error": 1.0,  # Indicates execution failure (vs. poor performance)
-                    # Performance metrics (zeros on error)
-                    "recall@10": 0.0,
-                    "mrr": 0.0,
-                    "tool/performance/recall@10": 0.0,
-                    "tool/performance/mrr": 0.0,
-                    # Reward metrics (use actual error penalty, not performance-based reward)
+                    "tool_execution_error": 1.0,  # Indicates execution failure
                     "tool_reward": -1.0,  # Error penalty
                     "tool/reward/base": -1.0,  # Error penalty
-                    # Plan structure/format metrics
-                    "plan_depth": 0,
-                    "num_nodes": 0,
-                    "tool/format/plan_depth": 0,
-                    "tool/format/num_nodes": 0,
-                    "tool/format/passed_hard_gate": 0.0,
-                    "tool/format/num_failure_modes": 0,
-                    "tool/format/quality": 0.0,
-                    # Decision metrics
-                    "tool/decision/is_keep": 0.0,
-                    "tool/decision/is_revise": 0.0,
-                    "tool/decision/is_conclude": 0.0,
-                    # Latency metrics (zeros on error)
-                    "latency": 0.0,
-                    "tool_client_latency": 0.0,
-                    "tool/latency/server": 0.0,
-                    "tool/latency/client": 0.0,
-                    "tool/latency/total": 0.0,
-                    # Server info
-                    "server_used": "none",
+                    "system/execution_errors": 1.0,  # Error occurred
                 }
             )
+            agent_data.metrics.update(metrics_update)
             agent_data.extra_fields["tool_error"] = parse_error
             agent_data.extra_fields["final_reward"] = -1.0
             return AgentState.TERMINATED

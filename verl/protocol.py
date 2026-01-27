@@ -209,14 +209,44 @@ def union_numpy_dict(
 
 
 def list_of_dict_to_dict_of_list(list_of_dict: list[dict]):
+    """Convert list of dicts to dict of lists, handling inconsistent keys.
+
+    This collects ALL keys from ALL dictionaries to handle cases where different
+    workers return different metric keys (e.g., some have errors, some don't).
+    Missing keys in individual dicts are filled with sensible defaults based on type.
+    """
     if len(list_of_dict) == 0:
         return {}
-    keys = list_of_dict[0].keys()
-    output = {key: [] for key in keys}
+
+    # Collect ALL unique keys from ALL dictionaries (safety net for inconsistent metrics)
+    all_keys = set()
     for data in list_of_dict:
-        for key, item in data.items():
-            assert key in output
-            output[key].append(item)
+        all_keys.update(data.keys())
+
+    # Build output dict with all keys, using type-appropriate defaults for missing values
+    output = {key: [] for key in all_keys}
+    for data in list_of_dict:
+        for key in all_keys:
+            value = data.get(key)
+            if value is None:
+                # Infer appropriate default based on first non-None value for this key
+                # If all values are None, default to 0.0 for safety
+                for other_data in list_of_dict:
+                    sample_value = other_data.get(key)
+                    if sample_value is not None:
+                        if isinstance(sample_value, (int, float)):
+                            value = 0.0
+                        elif isinstance(sample_value, str):
+                            value = ""
+                        elif isinstance(sample_value, bool):
+                            value = False
+                        else:
+                            value = 0.0  # Default fallback
+                        break
+                else:
+                    # All values are None, use numeric default
+                    value = 0.0
+            output[key].append(value)
     return output
 
 
