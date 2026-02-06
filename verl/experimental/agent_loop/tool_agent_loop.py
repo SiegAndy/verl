@@ -290,6 +290,8 @@ class ToolAgentLoop(AgentLoopBase):
             {
                 "turn_scores": agent_data.turn_scores,
                 "tool_rewards": agent_data.tool_rewards,
+                "assistant_turns": agent_data.assistant_turns,
+                "user_turns": agent_data.user_turns,
             }
         )
 
