@@ -223,6 +223,7 @@ class ToolAgentLoop(AgentLoopBase):
         request_id = uuid4().hex
         tools_kwargs = kwargs.get("tools_kwargs", {})
         extra_info = kwargs.get("extra_info", {})
+        is_validation = kwargs.get("is_validation", False)
 
         # Initialize interaction if needed
         interaction = None
@@ -259,6 +260,13 @@ class ToolAgentLoop(AgentLoopBase):
                     f"[AGENT_LOOP] request_id={request_id}: Set extra_fields with original_data: "
                     f"qid={original_data.get('qid')}, golden_docs={len(original_data.get('gold_doc_ids', []))} IDs"
                 )
+        
+        # Add validation flag to extra_fields for tool access
+        agent_data.extra_fields["is_validation"] = is_validation
+        if is_validation:
+            logger.warning(
+                f"[AGENT_LOOP] request_id={request_id}: VALIDATION MODE - is_validation={is_validation}"
+            )
 
         # State machine loop
         state = AgentState.PENDING

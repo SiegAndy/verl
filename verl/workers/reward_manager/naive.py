@@ -77,6 +77,39 @@ class NaiveRewardManager(AbstractRewardManager):
             ground_truth = data_item.non_tensor_batch["reward_model"]["ground_truth"]
             data_source = data_item.non_tensor_batch[self.reward_fn_key]
             extra_info = data_item.non_tensor_batch.get("extra_info", {})
+            
+            # Merge tool-added fields from agent_data.extra_fields
+            # These include: performance_metrics, format_penalties, tool_traces, etc.
+            tool_added_fields = [
+                "performance_metrics", "format_penalties", "tool_traces",
+                "final_metrics", "eval_report", "plan_stats", "assistant_turns"
+            ]
+            merged_count = 0
+            for field_name in tool_added_fields:
+                if field_name in data_item.non_tensor_batch:
+                    field_value = data_item.non_tensor_batch[field_name]
+                    # Handle numpy array wrapping (single item arrays)
+                    if hasattr(field_value, '__len__') and len(field_value) == 1:
+                        field_value = field_value[0]
+                    extra_info[field_name] = field_value
+                    merged_count += 1
+            
+            # Log merge results for first few samples to verify data flow
+            if i < 2:  # Log first 2 samples only
+                print(
+                    f"[REWARD_MANAGER_DEBUG] qid={data_source}: Merged {merged_count}/{len(tool_added_fields)} tool fields. "
+                    f"extra_info keys: {list(extra_info.keys())}"
+                )
+                if "tool_traces" in extra_info:
+                    tool_traces = extra_info["tool_traces"]
+                    if isinstance(tool_traces, list) and len(tool_traces) > 0:
+                        first_trace = tool_traces[0]
+                        has_ranklists = "ranklists" in first_trace if isinstance(first_trace, dict) else False
+                        print(
+                            f"[REWARD_MANAGER_DEBUG] qid={data_source}: tool_traces has {len(tool_traces)} entries, "
+                            f"first trace has ranklists: {has_ranklists}"
+                        )
+            
             num_turns = data_item.non_tensor_batch.get("__num_turns__", None)
             rollout_reward_scores = data_item.non_tensor_batch.get("reward_scores", {})
             extra_info["num_turns"] = num_turns

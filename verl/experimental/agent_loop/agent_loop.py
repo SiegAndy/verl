@@ -559,8 +559,10 @@ class AgentLoopWorker:
                 )
 
             agent_loop = self._agent_loop_cache[agent_name]
-            output: AgentLoopOutput = await agent_loop.run(sampling_params, **kwargs)
-            return await self._agent_loop_postprocess(output, **kwargs)
+            # Add validate flag from trajectory to kwargs for access in agent loop
+            kwargs_with_validate = {**kwargs, "is_validation": trajectory["validate"]}
+            output: AgentLoopOutput = await agent_loop.run(sampling_params, **kwargs_with_validate)
+            return await self._agent_loop_postprocess(output, **kwargs_with_validate)
 
     async def _agent_loop_postprocess(
         self, output, **kwargs

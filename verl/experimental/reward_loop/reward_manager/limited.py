@@ -16,6 +16,7 @@ import asyncio
 import inspect
 import logging
 
+import numpy as np
 from omegaconf import DictConfig
 from transformers import AutoTokenizer
 
@@ -409,7 +410,10 @@ class RateLimitedRewardManager(RewardManagerBase):
         extra_info = data_item.non_tensor_batch.get("extra_info", {})
         tool_extra_fields = data_item.non_tensor_batch.get("tool_extra_fields", None)
         if tool_extra_fields is not None:
-            extra_info.update(tool_extra_fields.items())
+            # tool_extra_fields is np.array([dict], dtype=object), extract the dict
+            tool_extra_dict = tool_extra_fields[0] if isinstance(tool_extra_fields, np.ndarray) else tool_extra_fields
+            if isinstance(tool_extra_dict, dict):
+                extra_info.update(tool_extra_dict.items())
 
         response_str = await self.loop.run_in_executor(
             None, lambda: self.tokenizer.decode(valid_response_ids, skip_special_tokens=True)

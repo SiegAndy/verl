@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import inspect
+import numpy as np
 
 from verl import DataProto
 from verl.experimental.reward_loop.reward_manager import register
@@ -44,7 +45,10 @@ class NaiveRewardManager(RewardManagerBase):
         extra_info = data_item.non_tensor_batch.get("extra_info", {})
         tool_extra_fields = data_item.non_tensor_batch.get("tool_extra_fields", None)
         if tool_extra_fields is not None:
-            extra_info.update(tool_extra_fields.items())
+            # tool_extra_fields is np.array([dict], dtype=object), extract the dict
+            tool_extra_dict = tool_extra_fields[0] if isinstance(tool_extra_fields, np.ndarray) else tool_extra_fields
+            if isinstance(tool_extra_dict, dict):
+                extra_info.update(tool_extra_dict.items())
 
         num_turns = data_item.non_tensor_batch.get("__num_turns__", None)
         rollout_reward_scores = data_item.non_tensor_batch.get("reward_scores", {})
