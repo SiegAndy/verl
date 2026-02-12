@@ -282,6 +282,9 @@ class ToolAgentLoop(AgentLoopBase):
             else:
                 logger.error(f"Invalid state: {state}")
                 state = AgentState.TERMINATED
+            logger.warning(
+                f"[AGENT_LOOP_STATUS] request_id={request_id}: entering state={state.name}"
+            )
 
         # Finalize output
         response_ids = agent_data.prompt_ids[-len(agent_data.response_mask) :]
@@ -303,6 +306,11 @@ class ToolAgentLoop(AgentLoopBase):
             }
         )
 
+        logger.warning(
+            f"[AGENT_LOOP_STATUS] request_id={request_id}: finalize_output "
+            f"assistant_turns={agent_data.assistant_turns} user_turns={agent_data.user_turns} "
+            f"response_tokens={len(response_ids)}"
+        )
         output = AgentLoopOutput(
             prompt_ids=prompt_ids,
             response_ids=response_ids[: self.response_length],
@@ -323,6 +331,9 @@ class ToolAgentLoop(AgentLoopBase):
         self, agent_data: AgentData, sampling_params: dict[str, Any]
     ) -> AgentState:
         """Handle the pending state: prepare the prompt and start generation."""
+        logger.warning(
+            f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: building prompt"
+        )
         prompt_ids = await self.apply_chat_template(
             agent_data.messages,
             tools=self.tool_schemas,
@@ -330,6 +341,9 @@ class ToolAgentLoop(AgentLoopBase):
             videos=agent_data.video_data,
         )
         agent_data.prompt_ids = prompt_ids
+        logger.warning(
+            f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: prompt_ready tokens={len(prompt_ids)}"
+        )
         return AgentState.GENERATING
 
     async def _handle_generating_state(
@@ -341,6 +355,9 @@ class ToolAgentLoop(AgentLoopBase):
         """Handle the generating state: generate model response and check for tool calls."""
         add_messages: list[dict[str, Any]] = []
 
+        logger.warning(
+            f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: generation_start"
+        )
         with simple_timer("generate_sequences", agent_data.metrics):
             output = await self.server_manager.generate(
                 request_id=agent_data.request_id,
@@ -364,18 +381,32 @@ class ToolAgentLoop(AgentLoopBase):
         elif output.stop_reason is not None:
             agent_data.extra_fields["finish_reason"] = output.stop_reason
 
+        logger.warning(
+            f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: generation_done "
+            f"response_tokens={len(agent_data.response_ids)} finish_reason={agent_data.extra_fields.get('finish_reason')}"
+        )
+
         # Check termination conditions
         if (
             not ignore_termination
             and len(agent_data.response_mask) >= self.response_length
         ):
+            logger.warning(
+                f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: terminate_reason=response_length"
+            )
             return AgentState.TERMINATED
         if (
             self.max_assistant_turns
             and agent_data.assistant_turns >= self.max_assistant_turns
         ):
+            logger.warning(
+                f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: terminate_reason=max_assistant_turns"
+            )
             return AgentState.TERMINATED
         if self.max_user_turns and agent_data.user_turns >= self.max_user_turns:
+            logger.warning(
+                f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: terminate_reason=max_user_turns"
+            )
             return AgentState.TERMINATED
 
         # Extract tool calls
@@ -385,6 +416,9 @@ class ToolAgentLoop(AgentLoopBase):
         )
         parse_error = self._get_tool_parser_error()
         if parse_error:
+            logger.warning(
+                f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: tool_parse_failed error={parse_error}"
+            )
             qid, query = self._resolve_tool_context(agent_data)
             logger.warning(
                 "Tool parsing failed: %s qid=%s query=%s finish_reason=%s parse_comment=%s response=%s",
@@ -411,6 +445,11 @@ class ToolAgentLoop(AgentLoopBase):
             agent_data.extra_fields["final_reward"] = -1.0
             return AgentState.TERMINATED
 
+        logger.warning(
+            f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: tool_parse_ok "
+            f"tool_calls={len(agent_data.tool_calls)}"
+        )
+
         # Handle interaction if needed
         if self.interaction_config_file:
             assistant_message = await self.loop.run_in_executor(
@@ -424,10 +463,19 @@ class ToolAgentLoop(AgentLoopBase):
 
         # Determine next state
         if agent_data.tool_calls:
+            logger.warning(
+                f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: next_state=PROCESSING_TOOLS"
+            )
             return AgentState.PROCESSING_TOOLS
         elif self.interaction_config_file:
+            logger.warning(
+                f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: next_state=INTERACTING"
+            )
             return AgentState.INTERACTING
         else:
+            logger.warning(
+                f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: next_state=TERMINATED(no_tools)"
+            )
             return AgentState.TERMINATED
 
     async def _handle_processing_tools_state(self, agent_data: AgentData) -> AgentState:
@@ -445,8 +493,15 @@ class ToolAgentLoop(AgentLoopBase):
             )
             tool_call_names.append(tool_call.name)
 
+        logger.warning(
+            f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: tool_calls_start "
+            f"count={len(tasks)} names={tool_call_names}"
+        )
         with simple_timer("tool_calls", agent_data.metrics):
             responses = await asyncio.gather(*tasks)
+        logger.warning(
+            f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: tool_calls_done responses={len(responses)}"
+        )
 
         # Process tool responses and update multi_modal_data
         # Removed: agent_data.new_images_this_turn = []
@@ -509,26 +564,22 @@ class ToolAgentLoop(AgentLoopBase):
 
         agent_data.messages.extend(add_messages)
 
-        if self.tool_parser_name == "gpt-oss":
-            logger.info("manually format tool responses for gpt-oss")
-            tool_response_text = build_gpt_oss_tool_response_text(
-                add_messages, tool_call_names
-            )
-            response_ids = await self.loop.run_in_executor(
-                None,
-                lambda: self.tokenizer.encode(
-                    tool_response_text, add_special_tokens=False
-                ),
-            )
-        else:
-            response_ids = await self.apply_chat_template(
-                add_messages,
-                images=new_images_this_turn,  # Using local variable
-                videos=None,
-                remove_system_prompt=True,
-            )
+        response_ids = await self._encode_tool_messages(
+            add_messages=add_messages,
+            tool_call_names=tool_call_names,
+            new_images_this_turn=new_images_this_turn,
+        )
+        total_after_tools = len(agent_data.response_mask) + len(response_ids)
+        logger.warning(
+            f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: tool_response_tokens={len(response_ids)} "
+            f"current_response_tokens={len(agent_data.response_mask)} total_after_tools={total_after_tools} "
+            f"response_budget={self.response_length}"
+        )
 
-        if len(agent_data.response_mask) + len(response_ids) >= self.response_length:
+        if total_after_tools >= self.response_length:
+            logger.warning(
+                f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: terminate_reason=response_length_after_tools"
+            )
             return AgentState.TERMINATED
         # Update prompt_ids and response_mask
 
@@ -545,10 +596,47 @@ class ToolAgentLoop(AgentLoopBase):
         if agent_data.response_logprobs:
             agent_data.response_logprobs += [0.0] * len(response_ids)
         agent_data.user_turns += 1
-        return AgentState.TERMINATED if should_terminate else AgentState.GENERATING
+        if should_terminate:
+            logger.warning(
+                f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: next_state=TERMINATED(after_tools)"
+            )
+            return AgentState.TERMINATED
+        logger.warning(
+            f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: next_state=GENERATING(after_tools)"
+        )
+        return AgentState.GENERATING
+
+    async def _encode_tool_messages(
+        self,
+        *,
+        add_messages: list[dict[str, Any]],
+        tool_call_names: list[str],
+        new_images_this_turn: list[Any],
+    ) -> list[int]:
+        if self.tool_parser_name == "gpt-oss":
+            logger.info("manually format tool responses for gpt-oss")
+            tool_response_text = build_gpt_oss_tool_response_text(
+                add_messages, tool_call_names
+            )
+            return await self.loop.run_in_executor(
+                None,
+                lambda: self.tokenizer.encode(
+                    tool_response_text, add_special_tokens=False
+                ),
+            )
+
+        return await self.apply_chat_template(
+            add_messages,
+            images=new_images_this_turn,
+            videos=None,
+            remove_system_prompt=True,
+        )
 
     async def _handle_interacting_state(self, agent_data: AgentData) -> AgentState:
         """Handle the interacting state: get user input from interaction."""
+        logger.warning(
+            f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: interacting_start"
+        )
         (
             should_terminate_sequence,
             interaction_responses,
@@ -582,8 +670,14 @@ class ToolAgentLoop(AgentLoopBase):
         # double check prompt
         # Check termination condition
         if should_terminate_sequence:
+            logger.warning(
+                f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: next_state=TERMINATED(after_interaction)"
+            )
             return AgentState.TERMINATED
         else:
+            logger.warning(
+                f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: next_state=GENERATING(after_interaction)"
+            )
             return AgentState.GENERATING
 
     async def _call_tool(
