@@ -62,7 +62,7 @@ class MultiTurnConfig(BaseConfig):
     enable_turn_batching: bool = True  # Synchronize samples at turn boundaries for batch tool processing
     enable_cross_worker_turn_batching: bool = False  # Deterministic per-turn tool batching across workers
     turn_batch_coordinator_name: Optional[str] = None  # Name for the turn batch coordinator
-    turn_batch_timeout_s: float = 3600  # Timeout in seconds for turn batch coordination
+    turn_batch_timeout_s: float = 10800  # Timeout in seconds for turn batch coordination
     log_turn_statistics: bool = True  # Log detailed per-turn timing and revision statistics
 
 

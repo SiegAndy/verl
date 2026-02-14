@@ -30,7 +30,7 @@ def create(
     port: int,
     rank: int,
     world_size: int,
-    data_expiration_seconds: int = 3600,
+    data_expiration_seconds: int = 10800,
     store_timeout: int = 300,
 ) -> "StatelessProcessGroup":
     """A replacement for `torch.distributed.init_process_group` that does not
@@ -53,7 +53,7 @@ def create(
         port: Port number to bind/listen on.
         rank: Rank of the current process.
         world_size: Total number of processes in the group.
-        data_expiration_seconds: Time in seconds before data entries expire (default: 3600).
+        data_expiration_seconds: Time in seconds before data entries expire (default: 10800).
         store_timeout: Timeout in seconds for TCPStore connection (default: 300).
 
     Returns:

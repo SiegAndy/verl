@@ -391,6 +391,9 @@ class ToolAgentLoop(AgentLoopBase):
             not ignore_termination
             and len(agent_data.response_mask) >= self.response_length
         ):
+            self._mark_pre_tool_termination_error(
+                agent_data, "response_length_limit_reached"
+            )
             logger.warning(
                 f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: terminate_reason=response_length"
             )
@@ -399,11 +402,15 @@ class ToolAgentLoop(AgentLoopBase):
             self.max_assistant_turns
             and agent_data.assistant_turns >= self.max_assistant_turns
         ):
+            self._mark_pre_tool_termination_error(
+                agent_data, "max_assistant_turns_reached"
+            )
             logger.warning(
                 f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: terminate_reason=max_assistant_turns"
             )
             return AgentState.TERMINATED
         if self.max_user_turns and agent_data.user_turns >= self.max_user_turns:
+            self._mark_pre_tool_termination_error(agent_data, "max_user_turns_reached")
             logger.warning(
                 f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: terminate_reason=max_user_turns"
             )
@@ -473,6 +480,7 @@ class ToolAgentLoop(AgentLoopBase):
             )
             return AgentState.INTERACTING
         else:
+            self._mark_pre_tool_termination_error(agent_data, "no_tool_calls")
             logger.warning(
                 f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: next_state=TERMINATED(no_tools)"
             )
@@ -788,6 +796,42 @@ class ToolAgentLoop(AgentLoopBase):
         if callable(get_error):
             return get_error()
         return None
+
+    def _mark_pre_tool_termination_error(
+        self, agent_data: AgentData, reason: str
+    ) -> None:
+        """Record a canonical tool error when terminating before any tool metrics exist."""
+        if "performance_metrics" in agent_data.extra_fields:
+            return
+        if "tool_error" in agent_data.extra_fields:
+            return
+
+        error_msg = f"terminated_before_tool_execution:{reason}"
+        agent_data.extra_fields["tool_error"] = error_msg
+        agent_data.extra_fields["final_reward"] = -1.0
+        agent_data.extra_fields.setdefault(
+            "final_metrics",
+            {
+                "recall@10": 0.0,
+                "mrr": 0.0,
+                "plan_depth": 0,
+                "num_nodes": 0,
+                "plan_breadth": 0,
+                "avg_node_complexity": 0.0,
+            },
+        )
+
+        metrics_update = CANONICAL_METRICS.copy()
+        metrics_update.update(
+            {
+                "tool_error": error_msg,
+                "tool_execution_error": 1.0,
+                "tool_reward": -1.0,
+                "tool/reward/base": -1.0,
+                "system/execution_errors": 1.0,
+            }
+        )
+        agent_data.metrics.update(metrics_update)
 
     def _initialize_interactions(self, interaction_config_file):
         """Initialize interactions from configuration.
