@@ -38,6 +38,19 @@ logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 
 
+def _normalize_timeout(timeout_s: Any) -> Optional[float]:
+    """Normalize timeout values: non-positive means infinite (None)."""
+    if timeout_s is None:
+        return None
+    try:
+        value = float(timeout_s)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
 @register("optimized_tool_agent")
 class OptimizedToolAgentLoop(ToolAgentLoop):
     """
@@ -50,7 +63,7 @@ class OptimizedToolAgentLoop(ToolAgentLoop):
             Enable detailed turn-by-turn statistics logging
         enable_cross_worker_turn_batching: bool = False
             Enable deterministic per-turn batching across workers
-        turn_batch_timeout_s: int = 900
+        turn_batch_timeout_s: int = 10800
             Timeout for cross-worker turn batching
     """
 
@@ -73,11 +86,17 @@ class OptimizedToolAgentLoop(ToolAgentLoop):
         self.enable_cross_worker_turn_batching = multi_turn_config.get(
             "enable_cross_worker_turn_batching", False
         )
-        self.turn_batch_timeout_s = multi_turn_config.get("turn_batch_timeout_s", 900)
+        self.turn_batch_timeout_s = _normalize_timeout(
+            multi_turn_config.get("turn_batch_timeout_s", 10800)
+        )
         self.turn_batch_coordinator_name = multi_turn_config.get(
             "turn_batch_coordinator_name"
         )
         self._turn_batch_coordinator = None
+        if self.turn_batch_timeout_s is None:
+            logger.warning(
+                "Cross-worker turn batching timeout is INFINITE (turn_batch_timeout_s <= 0)"
+            )
 
         # Statistics collector (shared across all samples in worker)
         if self.log_turn_statistics:

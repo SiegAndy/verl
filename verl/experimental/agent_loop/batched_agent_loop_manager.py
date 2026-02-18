@@ -51,6 +51,19 @@ class _TurnState:
             self.ready.set()
 
 
+def _normalize_timeout(timeout_s: Optional[float]) -> Optional[float]:
+    """Normalize timeout values: non-positive means infinite (None)."""
+    if timeout_s is None:
+        return None
+    try:
+        value = float(timeout_s)
+    except (TypeError, ValueError):
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
 @ray.remote
 class TurnBatchCoordinator:
     """
@@ -60,8 +73,8 @@ class TurnBatchCoordinator:
     all active samples have reported for that turn.
     """
 
-    def __init__(self, timeout_s: float = 900) -> None:
-        self.timeout_s = timeout_s
+    def __init__(self, timeout_s: Optional[float] = 10800) -> None:
+        self.timeout_s = _normalize_timeout(timeout_s)
         self.lock = asyncio.Lock()
         self._reset_state()
 
@@ -136,7 +149,10 @@ class TurnBatchCoordinator:
         if batch_id != self.batch_id:
             return False
         state = self._get_state(turn_num)
-        timeout = timeout_s or self.timeout_s
+        if timeout_s is None:
+            timeout = self.timeout_s
+        else:
+            timeout = _normalize_timeout(timeout_s)
         try:
             if not state.expected_ready.is_set():
                 await asyncio.wait_for(state.expected_ready.wait(), timeout=timeout)
@@ -469,15 +485,31 @@ class DeterministicTurnBatchedAgentLoopManager(SimpleBatchedAgentLoopManager):
             coordinator_name = f"turn_batch_coordinator_{uuid4().hex}"
             multi_turn_cfg["turn_batch_coordinator_name"] = coordinator_name
 
-        timeout_s = multi_turn_cfg.get("turn_batch_timeout_s", 900)
+        timeout_s = multi_turn_cfg.get("turn_batch_timeout_s", 10800)
+        coordinator_max_concurrency = int(
+            multi_turn_cfg.get("turn_batch_coordinator_max_concurrency", 4096)
+        )
+        if coordinator_max_concurrency <= 0:
+            logger.warning(
+                "[TurnBatched] Invalid turn_batch_coordinator_max_concurrency=%s; "
+                "falling back to 4096",
+                coordinator_max_concurrency,
+            )
+            coordinator_max_concurrency = 4096
+
+        self.turn_batch_coordinator_max_concurrency = coordinator_max_concurrency
         self.turn_batch_coordinator = TurnBatchCoordinator.options(
-            name=coordinator_name
+            name=coordinator_name,
+            max_concurrency=coordinator_max_concurrency,
         ).remote(timeout_s=timeout_s)
 
         logger.warning("=" * 80)
         logger.warning(
-            "[TurnBatched] Deterministic per-turn batching is ENABLED (coordinator=%s)",
+            "[TurnBatched] Deterministic per-turn batching is ENABLED "
+            "(coordinator=%s, timeout_s=%s, max_concurrency=%s)",
             coordinator_name,
+            timeout_s,
+            coordinator_max_concurrency,
         )
         logger.warning("=" * 80)
 
@@ -486,6 +518,14 @@ class DeterministicTurnBatchedAgentLoopManager(SimpleBatchedAgentLoopManager):
     def generate_sequences(self, prompts: DataProto) -> DataProto:
         batch_id = uuid4().hex
         total_samples = len(prompts)
+        if total_samples >= self.turn_batch_coordinator_max_concurrency:
+            logger.warning(
+                "[TurnBatched] total_samples=%s >= coordinator max_concurrency=%s. "
+                "This can deadlock when waiting/reporting overlap. Increase "
+                "turn_batch_coordinator_max_concurrency.",
+                total_samples,
+                self.turn_batch_coordinator_max_concurrency,
+            )
         ray.get(self.turn_batch_coordinator.start_batch.remote(batch_id, total_samples))
         ray.get(
             [
