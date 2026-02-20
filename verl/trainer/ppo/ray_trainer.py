@@ -20,6 +20,7 @@ This trainer supports model-agonistic model initialization with huggingface
 
 import json
 import logging
+import math
 import os
 import uuid
 from collections import defaultdict
@@ -520,7 +521,21 @@ class RayPPOTrainer:
 
         val_batch_size = self.config.data.val_batch_size  # Prefer config value if set
         if val_batch_size is None:
-            val_batch_size = len(self.val_dataset)
+            # Keep validation rollout load comparable to train rollout load.
+            # Training generates `train_batch_size * rollout.n` samples per step.
+            # Validation generates `val_batch_size * val_kwargs.n` samples per step.
+            train_rollout_n = int(self.config.actor_rollout_ref.rollout.n)
+            val_rollout_n = int(self.config.actor_rollout_ref.rollout.val_kwargs.n)
+            target_generated_samples = train_batch_size * train_rollout_n
+            val_batch_size = math.ceil(
+                target_generated_samples / max(1, val_rollout_n)
+            )
+            val_batch_size = max(1, min(val_batch_size, len(self.val_dataset)))
+            print(
+                "Auto-setting val_batch_size to match train rollout load: "
+                f"train_batch_size({train_batch_size}) * rollout.n({train_rollout_n}) "
+                f"/ val_kwargs.n({val_rollout_n}) => val_batch_size={val_batch_size}"
+            )
 
         self.val_dataloader = StatefulDataLoader(
             dataset=self.val_dataset,
@@ -1005,6 +1020,42 @@ class RayPPOTrainer:
                     else:
                         metric_sec = "val-aux"
                     pfx = f"{metric_sec}/{data_source}/{var_name}/{metric_name}"
+                    metric_dict[pfx] = metric_val
+
+        # Also report validation metrics aggregated across all data sources.
+        # This is useful when `data_source` is a sample id (e.g. qid), where
+        # per-source metrics effectively become per-sample metrics in loggers.
+        if len(sample_uids) > 0:
+            global_data_sources = np.array(
+                ["__all__"] * len(sample_uids), dtype=object
+            )
+            global_var2metric2val = process_validation_metrics(
+                global_data_sources, sample_uids, reward_extra_infos_dict
+            ).get("__all__", {})
+
+            global_core_var = (
+                "acc" if "acc" in global_var2metric2val else "reward"
+            )
+            for var_name, metric2val in global_var2metric2val.items():
+                n_max = max(
+                    [
+                        int(name.split("@")[-1].split("/")[0])
+                        for name in metric2val.keys()
+                    ]
+                )
+                for metric_name, metric_val in metric2val.items():
+                    if (
+                        (var_name == global_core_var)
+                        and any(
+                            metric_name.startswith(pfx)
+                            for pfx in ["mean", "maj", "best"]
+                        )
+                        and (f"@{n_max}" in metric_name)
+                    ):
+                        metric_sec = "val-global-core"
+                    else:
+                        metric_sec = "val-global-aux"
+                    pfx = f"{metric_sec}/{var_name}/{metric_name}"
                     metric_dict[pfx] = metric_val
 
         if len(sample_turns) > 0:
