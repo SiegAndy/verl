@@ -82,7 +82,8 @@ class NaiveRewardManager(AbstractRewardManager):
             # These include: performance_metrics, format_penalties, tool_traces, etc.
             tool_added_fields = [
                 "performance_metrics", "format_penalties", "tool_traces",
-                "final_metrics", "eval_report", "plan_stats", "assistant_turns"
+                "tool_iteration_feedbacks", "final_metrics", "eval_report",
+                "plan_stats", "assistant_turns", "request_id",
             ]
             merged_count = 0
             for field_name in tool_added_fields:
