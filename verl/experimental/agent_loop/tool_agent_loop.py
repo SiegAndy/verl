@@ -224,6 +224,7 @@ class ToolAgentLoop(AgentLoopBase):
         tools_kwargs = kwargs.get("tools_kwargs", {})
         extra_info = kwargs.get("extra_info", {})
         is_validation = kwargs.get("is_validation", False)
+        sample_index = kwargs.get("index")
 
         # Initialize interaction if needed
         interaction = None
@@ -253,6 +254,8 @@ class ToolAgentLoop(AgentLoopBase):
         )
         if isinstance(extra_info, dict):
             agent_data.extra_fields.update(extra_info)
+            if sample_index is None:
+                sample_index = extra_info.get("sample_index")
             # Log to verify extra_info contains original_data with golden doc IDs
             original_data = extra_info.get("original_data", {})
             if original_data:
@@ -260,7 +263,16 @@ class ToolAgentLoop(AgentLoopBase):
                     f"[AGENT_LOOP] request_id={request_id}: Set extra_fields with original_data: "
                     f"qid={original_data.get('qid')}, golden_docs={len(original_data.get('gold_doc_ids', []))} IDs"
                 )
-        
+
+        if sample_index is not None:
+            try:
+                sample_index = int(sample_index)
+                agent_data.extra_fields["sample_index"] = sample_index
+            except (TypeError, ValueError):
+                logger.warning(
+                    f"[AGENT_LOOP] request_id={request_id}: Failed to cast sample_index={sample_index} to int"
+                )
+
         # Add validation flag to extra_fields for tool access
         agent_data.extra_fields["is_validation"] = is_validation
         if is_validation:
