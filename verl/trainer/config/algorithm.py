@@ -101,6 +101,17 @@ class ZeroAdvantageFilterConfig(BaseConfig):
     zero_threshold: float = 1e-6
     max_streak: int = 10
     reset_streak_on_nonzero: bool = True
+    # Optional external tag file mode (epoch/qid -> zero_adv_tag).
+    # If set, trainer can drive epoch filtering from this file while still
+    # loading the full train dataset.
+    external_tags_file: Optional[str] = None
+    external_epoch_column: str = "epoch"
+    external_qid_column: str = "qid"
+    external_tag_column: str = "zero_adv_tag"
+    external_startup_epoch_label: str = "startup"
+    external_epoch_label_template: str = "ep{epoch}"
+    external_unknown_tag: str = "non_zero"
+    external_fallback_to_streak_filter: bool = True
 
 
 @dataclass

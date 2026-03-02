@@ -23,6 +23,7 @@ import logging
 import math
 import os
 import uuid
+import csv
 from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -423,6 +424,17 @@ class RayPPOTrainer:
         zero_adv_filter_config = self.config.algorithm.get("zero_advantage_filter")
         self.zero_advantage_filter_enabled = False
         self.zero_advantage_filter = None
+        self.zero_advantage_external_tags_enabled = False
+        self.zero_advantage_external_tags_by_epoch = {}
+        self.zero_advantage_external_state_by_uid = {}
+        self.zero_advantage_external_last_applied_prev_epoch = -1
+        self.zero_advantage_external_epoch_column = "epoch"
+        self.zero_advantage_external_qid_column = "qid"
+        self.zero_advantage_external_tag_column = "zero_adv_tag"
+        self.zero_advantage_external_startup_epoch_label = "startup"
+        self.zero_advantage_external_epoch_label_template = "ep{epoch}"
+        self.zero_advantage_external_unknown_tag = "non_zero"
+        self.zero_advantage_external_fallback_to_streak_filter = True
 
         if zero_adv_filter_config is not None:
             # Convert dict to ZeroAdvantageFilterConfig if needed
@@ -442,15 +454,16 @@ class RayPPOTrainer:
             if zero_adv_filter_config.enable:
                 self.zero_advantage_filter = ZeroAdvantageFilter(zero_adv_filter_config)
                 self.zero_advantage_filter_enabled = True
-                print(
+                logger.warning(
                     f"Zero advantage filter ENABLED: "
                     f"p_good={zero_adv_filter_config.p_good_zero}, "
                     f"p_bad={zero_adv_filter_config.p_bad_zero}"
                 )
+                self._init_external_zero_adv_tags(zero_adv_filter_config)
             else:
-                print("Zero advantage filter DISABLED (enable=False in config)")
+                logger.warning("Zero advantage filter DISABLED (enable=False in config)")
         else:
-            print("Zero advantage filter DISABLED (not in config)")
+            logger.warning("Zero advantage filter DISABLED (not in config)")
 
         self.use_prefix_grouper = self.config.actor_rollout_ref.actor.get(
             "use_prefix_grouper", False
@@ -460,6 +473,264 @@ class RayPPOTrainer:
         )
 
         self._create_dataloader(train_dataset, val_dataset, collate_fn, train_sampler)
+
+    def _init_external_zero_adv_tags(
+        self, zero_adv_filter_config: ZeroAdvantageFilterConfig
+    ) -> None:
+        """Initialize optional external zero-advantage tags lookup."""
+        tags_file = getattr(zero_adv_filter_config, "external_tags_file", None)
+        if not tags_file:
+            return
+
+        self.zero_advantage_external_epoch_column = getattr(
+            zero_adv_filter_config, "external_epoch_column", "epoch"
+        )
+        self.zero_advantage_external_qid_column = getattr(
+            zero_adv_filter_config, "external_qid_column", "qid"
+        )
+        self.zero_advantage_external_tag_column = getattr(
+            zero_adv_filter_config, "external_tag_column", "zero_adv_tag"
+        )
+        self.zero_advantage_external_startup_epoch_label = getattr(
+            zero_adv_filter_config, "external_startup_epoch_label", "startup"
+        )
+        self.zero_advantage_external_epoch_label_template = getattr(
+            zero_adv_filter_config, "external_epoch_label_template", "ep{epoch}"
+        )
+        self.zero_advantage_external_unknown_tag = getattr(
+            zero_adv_filter_config, "external_unknown_tag", "non_zero"
+        )
+        self.zero_advantage_external_fallback_to_streak_filter = bool(
+            getattr(zero_adv_filter_config, "external_fallback_to_streak_filter", True)
+        )
+
+        tags_path = os.path.expanduser(str(tags_file))
+        if not os.path.exists(tags_path):
+            msg = f"External zero-adv tags file not found: {tags_path}"
+            if self.zero_advantage_external_fallback_to_streak_filter:
+                logger.warning(msg + " (falling back to streak-based filter)")
+                return
+            raise FileNotFoundError(msg)
+
+        try:
+            tags_by_epoch = self._load_external_zero_adv_tag_lookup(tags_path)
+            self.zero_advantage_external_tags_by_epoch = tags_by_epoch
+            self.zero_advantage_external_tags_enabled = True
+            tag_value_counts = {"non_zero": 0, "good_zero": 0, "bad_zero": 0}
+            total_entries = 0
+            for epoch_map in tags_by_epoch.values():
+                for tag in epoch_map.values():
+                    tag_value_counts[tag] = tag_value_counts.get(tag, 0) + 1
+                    total_entries += 1
+            zero_entries = tag_value_counts.get("good_zero", 0) + tag_value_counts.get(
+                "bad_zero", 0
+            )
+            nonzero_ratio = (
+                100.0 * tag_value_counts.get("non_zero", 0) / total_entries
+                if total_entries
+                else 0.0
+            )
+            zero_ratio = (
+                100.0 * zero_entries / total_entries if total_entries else 0.0
+            )
+            good_ratio = (
+                100.0 * tag_value_counts.get("good_zero", 0) / total_entries
+                if total_entries
+                else 0.0
+            )
+            bad_ratio = (
+                100.0 * tag_value_counts.get("bad_zero", 0) / total_entries
+                if total_entries
+                else 0.0
+            )
+            logger.warning(
+                "Zero advantage external tags ENABLED: "
+                f"path={tags_path}, entries={total_entries}, "
+                f"epoch_col={self.zero_advantage_external_epoch_column}, "
+                f"qid_col={self.zero_advantage_external_qid_column}, "
+                f"tag_col={self.zero_advantage_external_tag_column}, "
+                f"epoch_label_template={self.zero_advantage_external_epoch_label_template}"
+            )
+            logger.warning(
+                "Zero advantage external tags LOAD Summary: "
+                f"Total={total_entries}, "
+                f"NonZero={tag_value_counts.get('non_zero', 0)} "
+                f"({nonzero_ratio:.1f}%), "
+                f"Zero={zero_entries} "
+                f"({zero_ratio:.1f}%), "
+                f"GoodZero={tag_value_counts.get('good_zero', 0)} "
+                f"({good_ratio:.1f}%), "
+                f"BadZero={tag_value_counts.get('bad_zero', 0)} "
+                f"({bad_ratio:.1f}%)"
+            )
+            # Startup state:
+            # - default is empty dict => unknown qids fallback to non_zero
+            # - if file provided, bootstrap from latest epoch label in file
+            self.zero_advantage_external_state_by_uid = {}
+            latest_label, latest_idx = self._find_latest_external_epoch_label(
+                tags_by_epoch
+            )
+            if latest_label is not None:
+                latest_map = tags_by_epoch.get(latest_label, {})
+                self.zero_advantage_external_state_by_uid = dict(latest_map)
+                self.zero_advantage_external_last_applied_prev_epoch = int(latest_idx)
+                startup_total = len(self.zero_advantage_external_state_by_uid)
+                startup_good = sum(
+                    1
+                    for t in self.zero_advantage_external_state_by_uid.values()
+                    if t == "good_zero"
+                )
+                startup_bad = sum(
+                    1
+                    for t in self.zero_advantage_external_state_by_uid.values()
+                    if t == "bad_zero"
+                )
+                startup_zero = startup_good + startup_bad
+                startup_nonzero = startup_total - startup_zero
+                logger.warning(
+                    "Zero advantage external tags BOOTSTRAP State Summary: "
+                    f"SourceLabel={latest_label}, SourceEpoch={latest_idx}, "
+                    f"Total={startup_total}, NonZero={startup_nonzero}, "
+                    f"Zero={startup_zero}, GoodZero={startup_good}, BadZero={startup_bad}"
+                )
+            else:
+                self.zero_advantage_external_last_applied_prev_epoch = -1
+                logger.warning(
+                    "Zero advantage external tags BOOTSTRAP State Summary: "
+                    "No epoch labels matching external_epoch_label_template were found; "
+                    "starting from default all-non_zero behavior."
+                )
+        except Exception as exc:
+            msg = f"Failed to load external zero-adv tags from {tags_path}: {exc}"
+            if self.zero_advantage_external_fallback_to_streak_filter:
+                logger.warning(msg + " (falling back to streak-based filter)")
+                self.zero_advantage_external_tags_enabled = False
+                self.zero_advantage_external_tags_by_epoch = {}
+                self.zero_advantage_external_state_by_uid = {}
+            else:
+                raise RuntimeError(msg) from exc
+
+    def _parse_external_epoch_index_from_label(self, label: str) -> Optional[int]:
+        """Parse epoch integer from label using external_epoch_label_template."""
+        template = self.zero_advantage_external_epoch_label_template
+        marker = "{epoch}"
+        if marker not in template:
+            return None
+        prefix, suffix = template.split(marker, 1)
+        if not label.startswith(prefix):
+            return None
+        if suffix and not label.endswith(suffix):
+            return None
+        core = label[len(prefix) :]
+        if suffix:
+            core = core[: -len(suffix)]
+        if core == "":
+            return None
+        try:
+            return int(core)
+        except ValueError:
+            return None
+
+    def _find_latest_external_epoch_label(
+        self, tags_by_epoch: dict[str, dict[str, str]]
+    ) -> tuple[Optional[str], Optional[int]]:
+        """Return latest epoch label/index matching external_epoch_label_template."""
+        latest_label = None
+        latest_idx = None
+        for label in tags_by_epoch.keys():
+            idx = self._parse_external_epoch_index_from_label(str(label))
+            if idx is None:
+                continue
+            if latest_idx is None or idx > latest_idx:
+                latest_idx = idx
+                latest_label = str(label)
+        return latest_label, latest_idx
+
+    def _load_external_zero_adv_tag_lookup(
+        self, tags_path: str
+    ) -> dict[str, dict[str, str]]:
+        """Load epoch->(qid->tag) from csv/json/jsonl/parquet."""
+        ext = os.path.splitext(tags_path)[1].lower()
+        rows = []
+
+        if ext == ".csv":
+            with open(tags_path, "r", encoding="utf-8", newline="") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+        elif ext in {".jsonl", ".ndjson"}:
+            with open(tags_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    rows.append(json.loads(line))
+        elif ext == ".json":
+            with open(tags_path, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+            if isinstance(payload, list):
+                rows = payload
+            elif isinstance(payload, dict):
+                # single object or object containing list under common keys
+                if "rows" in payload and isinstance(payload["rows"], list):
+                    rows = payload["rows"]
+                else:
+                    rows = [payload]
+            else:
+                raise ValueError("Unsupported JSON payload for external tags file")
+        elif ext == ".parquet":
+            import pandas as pd
+
+            rows = pd.read_parquet(tags_path).to_dict(orient="records")
+        else:
+            raise ValueError(
+                f"Unsupported external tags file extension: {ext} "
+                "(supported: .csv, .jsonl, .json, .parquet)"
+            )
+
+        epoch_col = self.zero_advantage_external_epoch_column
+        qid_col = self.zero_advantage_external_qid_column
+        tag_col = self.zero_advantage_external_tag_column
+
+        tags_by_epoch: dict[str, dict[str, str]] = defaultdict(dict)
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            if epoch_col not in row or qid_col not in row:
+                continue
+            epoch_value = str(row.get(epoch_col)).strip()
+            qid_value = str(row.get(qid_col)).strip()
+            if not epoch_value or not qid_value:
+                continue
+
+            tag_value = row.get(tag_col, None)
+            if tag_value is None:
+                # Fallback if file contains booleans instead of a tag column
+                is_bad = bool(row.get("is_bad_zero_adv", False))
+                is_good = bool(row.get("is_good_zero_adv", False))
+                is_zero = bool(row.get("is_zero_adv", False))
+                if is_bad:
+                    tag = "bad_zero"
+                elif is_good:
+                    tag = "good_zero"
+                elif is_zero:
+                    tag = "bad_zero"
+                else:
+                    tag = "non_zero"
+            else:
+                tag = str(tag_value).strip().lower()
+                if tag in {"non_zero", "nonzero", "non-zero"}:
+                    tag = "non_zero"
+                elif tag in {"good_zero", "good-zero", "good"}:
+                    tag = "good_zero"
+                elif tag in {"bad_zero", "bad-zero", "bad"}:
+                    tag = "bad_zero"
+                else:
+                    # Unknown tags default to configured unknown tag
+                    tag = self.zero_advantage_external_unknown_tag
+
+            tags_by_epoch[epoch_value][qid_value] = tag
+
+        return dict(tags_by_epoch)
 
     def _create_dataloader(
         self, train_dataset, val_dataset, collate_fn, train_sampler: Optional[Sampler]
@@ -1564,6 +1835,140 @@ class RayPPOTrainer:
                 print(f"Error accessing dataset index {idx}: {e}")
                 continue
 
+        # Optional external file mode:
+        # - Epoch 0 filtering uses startup state
+        # - Epoch k>0 filtering uses state after applying transitions from epoch k-1
+        if self.zero_advantage_external_tags_enabled:
+            prev_epoch = epoch - 1
+            # Apply transition updates exactly once for each previous epoch.
+            if prev_epoch >= 0 and self.zero_advantage_external_last_applied_prev_epoch < prev_epoch:
+                for ep in range(
+                    self.zero_advantage_external_last_applied_prev_epoch + 1,
+                    prev_epoch + 1,
+                ):
+                    prev_label = self.zero_advantage_external_epoch_label_template.format(
+                        epoch=ep
+                    )
+                    prev_map = self.zero_advantage_external_tags_by_epoch.get(
+                        prev_label, {}
+                    )
+                    if prev_map:
+                        self.zero_advantage_external_state_by_uid.update(prev_map)
+                    self.zero_advantage_external_last_applied_prev_epoch = ep
+                    logger.warning(
+                        f"Zero Advantage Filter - Epoch {epoch} ExternalTag Transition Applied: "
+                        f"FromLabel={prev_label}, Updates={len(prev_map)}, "
+                        f"StateSize={len(self.zero_advantage_external_state_by_uid)}"
+                    )
+
+            epoch_label = self.zero_advantage_external_epoch_label_template.format(
+                epoch=epoch
+            )
+            random_state = np.random.RandomState(self.config.trainer.seed + epoch)
+            keep_mask = np.ones(len(all_uids), dtype=bool)
+            tag_counts = {"non_zero": 0, "good_zero": 0, "bad_zero": 0, "unknown": 0}
+
+            for i, uid in enumerate(all_uids):
+                tag = self.zero_advantage_external_state_by_uid.get(uid)
+                if tag is None:
+                    tag_counts["unknown"] += 1
+                    tag = self.zero_advantage_external_unknown_tag
+
+                if tag == "good_zero":
+                    tag_counts["good_zero"] += 1
+                    keep_prob = self.zero_advantage_filter.config.p_good_zero
+                    keep_mask[i] = random_state.rand() < keep_prob
+                elif tag == "bad_zero":
+                    tag_counts["bad_zero"] += 1
+                    keep_prob = self.zero_advantage_filter.config.p_bad_zero
+                    keep_mask[i] = random_state.rand() < keep_prob
+                else:
+                    tag_counts["non_zero"] += 1
+                    keep_mask[i] = True
+
+            total_samples = len(all_indices)
+            zero_total = tag_counts["good_zero"] + tag_counts["bad_zero"]
+            non_zero_ratio = (
+                100.0 * tag_counts["non_zero"] / total_samples if total_samples else 0.0
+            )
+            zero_ratio = 100.0 * zero_total / total_samples if total_samples else 0.0
+            good_ratio = (
+                100.0 * tag_counts["good_zero"] / total_samples
+                if total_samples
+                else 0.0
+            )
+            bad_ratio = (
+                100.0 * tag_counts["bad_zero"] / total_samples
+                if total_samples
+                else 0.0
+            )
+            logger.warning(
+                f"Zero Advantage Filter - Epoch {epoch} ExternalTag Input Summary (used for this epoch): "
+                f"Total={total_samples}, NonZero={tag_counts['non_zero']} ({non_zero_ratio:.1f}%), "
+                f"Zero={zero_total} ({zero_ratio:.1f}%), "
+                f"GoodZero={tag_counts['good_zero']} ({good_ratio:.1f}%), "
+                f"BadZero={tag_counts['bad_zero']} ({bad_ratio:.1f}%), "
+                f"Unknown={tag_counts['unknown']}, EpochLabel={epoch_label}, "
+                "BootstrapMode=latest_epoch_from_file_or_default_non_zero, "
+                f"LastAppliedPrevEpoch={self.zero_advantage_external_last_applied_prev_epoch}"
+            )
+
+            filtered_indices = [
+                all_indices[i] for i in range(len(all_indices)) if keep_mask[i]
+            ]
+            samples_to_keep = len(filtered_indices)
+            samples_to_filter = total_samples - samples_to_keep
+            keep_ratio = (100.0 * samples_to_keep / total_samples) if total_samples else 0.0
+
+            logger.warning(
+                f"Zero Advantage Filter - Epoch {epoch} ExternalTag Filtering: "
+                f"Total={total_samples}, ToFilter={samples_to_filter}, ToKeep={samples_to_keep} "
+                f"({keep_ratio:.1f}%), "
+                f"TagCounts(non_zero={tag_counts['non_zero']}, "
+                f"good_zero={tag_counts['good_zero']}, bad_zero={tag_counts['bad_zero']}, "
+                f"unknown={tag_counts['unknown']}), "
+                f"EpochLabel={epoch_label}"
+            )
+
+            filter_stats = {
+                "total_samples": total_samples,
+                "samples_to_filter": samples_to_filter,
+                "samples_to_keep": samples_to_keep,
+                "avg_streak_of_filtered": 0.0,
+                "tag_counts": tag_counts,
+                "epoch_label": epoch_label,
+                "mode": "external_tags",
+            }
+            return filtered_indices, filter_stats
+
+        # Streak-based mode: summarize the exact composition used to make this epoch decision.
+        zero_good_count = 0
+        zero_bad_count = 0
+        non_zero_count = 0
+        for uid in all_uids:
+            uid_str = str(uid)
+            streak = self.zero_advantage_filter.streak_tracker.get(uid_str, 0)
+            if streak > 0:
+                if self.zero_advantage_filter.zero_type_tracker.get(uid_str, False):
+                    zero_good_count += 1
+                else:
+                    zero_bad_count += 1
+            else:
+                non_zero_count += 1
+        total_samples = len(all_uids)
+        zero_total = zero_good_count + zero_bad_count
+        non_zero_ratio = 100.0 * non_zero_count / total_samples if total_samples else 0.0
+        zero_ratio = 100.0 * zero_total / total_samples if total_samples else 0.0
+        good_ratio = 100.0 * zero_good_count / total_samples if total_samples else 0.0
+        bad_ratio = 100.0 * zero_bad_count / total_samples if total_samples else 0.0
+        logger.warning(
+            f"Zero Advantage Filter - Epoch {epoch} Streak Input Summary (used for this epoch): "
+            f"Total={total_samples}, NonZero={non_zero_count} ({non_zero_ratio:.1f}%), "
+            f"Zero={zero_total} ({zero_ratio:.1f}%), "
+            f"GoodZero={zero_good_count} ({good_ratio:.1f}%), "
+            f"BadZero={zero_bad_count} ({bad_ratio:.1f}%)"
+        )
+
         # Compute filtering mask based on current streaks
         keep_mask, filter_stats = self.zero_advantage_filter.compute_epoch_filter_mask(
             all_uids,
@@ -1576,7 +1981,7 @@ class RayPPOTrainer:
         ]
 
         # Log filtering decision to console
-        print(
+        logger.warning(
             f"Zero Advantage Filter - Epoch {epoch} Filtering: "
             f"Total={filter_stats['total_samples']}, "
             f"ToFilter={filter_stats['samples_to_filter']}, "
@@ -2298,6 +2703,7 @@ class RayPPOTrainer:
                     if (
                         self.zero_advantage_filter_enabled
                         and self.zero_advantage_filter is not None
+                        and not self.zero_advantage_external_tags_enabled
                     ):
                         streak_stats = (
                             self.zero_advantage_filter.update_streaks_from_batch(batch)

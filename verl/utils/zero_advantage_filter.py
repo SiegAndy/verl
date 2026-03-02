@@ -67,6 +67,16 @@ class ZeroAdvantageFilterConfig:
     zero_threshold: float = 1e-6
     max_streak: int = 10
     reset_streak_on_nonzero: bool = True
+    # Optional external tag file mode (epoch/qid -> zero_adv_tag).
+    # When provided, trainer can apply epoch filtering from this file instead of live streaks.
+    external_tags_file: Optional[str] = None
+    external_epoch_column: str = "epoch"
+    external_qid_column: str = "qid"
+    external_tag_column: str = "zero_adv_tag"
+    external_startup_epoch_label: str = "startup"
+    external_epoch_label_template: str = "ep{epoch}"
+    external_unknown_tag: str = "non_zero"
+    external_fallback_to_streak_filter: bool = True
 
     def __post_init__(self):
         """Validate configuration parameters."""
@@ -83,6 +93,15 @@ class ZeroAdvantageFilterConfig:
             assert (
                 self.max_streak > 0
             ), f"max_streak must be positive, got {self.max_streak}"
+            assert self.external_unknown_tag in {
+                "non_zero",
+                "good_zero",
+                "bad_zero",
+            }, (
+                "external_unknown_tag must be one of "
+                "{'non_zero','good_zero','bad_zero'}, got "
+                f"{self.external_unknown_tag}"
+            )
 
 
 class ZeroAdvantageFilter:
