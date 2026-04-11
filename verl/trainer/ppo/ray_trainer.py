@@ -92,6 +92,11 @@ from verl.utils.zero_advantage_filter import (
 from verl.workers.config import FSDPEngineConfig
 from verl.workers.utils.padding import left_right_2_no_padding, no_padding_2_padding
 
+from src.agent.trainer.decomposer.verl_integration.best_turn_truncation import (
+    apply_best_turn_truncation,
+    is_best_turn_truncation_enabled,
+)
+
 
 @dataclass
 class ResourcePoolManager:
@@ -2485,6 +2490,60 @@ class RayPPOTrainer:
                     )
                     batch = batch.union(gen_batch_output)
 
+                    if is_best_turn_truncation_enabled(self.config):
+                        dp_size = self._get_dp_size(self.actor_rollout_wg, "actor")
+                        batch, best_turn_metrics = apply_best_turn_truncation(
+                            batch,
+                            config=self.config,
+                            pad_token_id=(
+                                self.tokenizer.pad_token_id
+                                if self.tokenizer.pad_token_id is not None
+                                else self.tokenizer.eos_token_id
+                            ),
+                            dp_size=dp_size,
+                            is_validation=False,
+                        )
+                        metrics.update(best_turn_metrics)
+                        if not hasattr(self, "_epoch_best_turn_stats"):
+                            self._epoch_best_turn_stats = defaultdict(float)
+                        for key, value in best_turn_metrics.items():
+                            if key.startswith("best_turn/"):
+                                short_key = key.split("/", 1)[1]
+                                if (
+                                    short_key.endswith("_rate")
+                                    or short_key == "mean_cut_turn"
+                                ):
+                                    continue
+                                self._epoch_best_turn_stats[short_key] += float(value)
+                        epoch_raw = self._epoch_best_turn_stats.get(
+                            "raw_rollout_count", 0.0
+                        )
+                        if epoch_raw > 0:
+                            metrics.update(
+                                {
+                                    "best_turn_epoch/raw_rollout_count": epoch_raw,
+                                    "best_turn_epoch/split_count": self._epoch_best_turn_stats.get(
+                                        "split_count", 0.0
+                                    ),
+                                    "best_turn_epoch/split_rate": self._epoch_best_turn_stats.get(
+                                        "split_count", 0.0
+                                    )
+                                    / epoch_raw,
+                                    "best_turn_epoch/drop_for_dp_divisor_count": self._epoch_best_turn_stats.get(
+                                        "drop_for_dp_divisor_count", 0.0
+                                    ),
+                                    "best_turn_epoch/skip_all_zero": self._epoch_best_turn_stats.get(
+                                        "skip_all_zero", 0.0
+                                    ),
+                                    "best_turn_epoch/skip_best_is_final": self._epoch_best_turn_stats.get(
+                                        "skip_best_is_final", 0.0
+                                    ),
+                                    "best_turn_epoch/skip_invalid_boundary": self._epoch_best_turn_stats.get(
+                                        "skip_invalid_boundary", 0.0
+                                    ),
+                                }
+                            )
+
                     if "response_mask" not in batch.batch.keys():
                         batch.batch["response_mask"] = compute_response_mask(batch)
                     # Balance the number of valid tokens across DP ranks.
@@ -3065,3 +3124,20 @@ class RayPPOTrainer:
                         flush=True,
                     )
                 del self._epoch_streak_stats
+
+            if hasattr(self, "_epoch_best_turn_stats"):
+                epoch_stats = self._epoch_best_turn_stats
+                raw_count = epoch_stats.get("raw_rollout_count", 0.0)
+                if raw_count > 0:
+                    print(
+                        f"Best-Turn Truncation Epoch {epoch} Summary: "
+                        f"Raw={int(raw_count)}, "
+                        f"Split={int(epoch_stats.get('split_count', 0.0))} "
+                        f"({100.0 * epoch_stats.get('split_count', 0.0) / raw_count:.1f}%), "
+                        f"DroppedForDP={int(epoch_stats.get('drop_for_dp_divisor_count', 0.0))}, "
+                        f"AllZero={int(epoch_stats.get('skip_all_zero', 0.0))}, "
+                        f"BestIsFinal={int(epoch_stats.get('skip_best_is_final', 0.0))}, "
+                        f"InvalidBoundary={int(epoch_stats.get('skip_invalid_boundary', 0.0))}",
+                        flush=True,
+                    )
+                del self._epoch_best_turn_stats

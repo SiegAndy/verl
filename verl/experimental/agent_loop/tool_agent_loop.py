@@ -50,10 +50,15 @@ logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
 CANONICAL_METRICS = {
     # Performance metrics (main results)
     "perf/recall@10": 0.0,
+    "perf/recall@20": 0.0,
+    "perf/ndcg@20": 0.0,
     "perf/mrr": 0.0,
     "perf/recall@10_weighted": 0.0,
+    "perf/recall@20_weighted": 0.0,
     "perf/mrr_weighted": 0.0,
     "recall@10": 0.0,
+    "recall@20": 0.0,
+    "ndcg@20": 0.0,
     "mrr": 0.0,
     # Plan structure metrics
     "plan/depth": 0,
@@ -87,6 +92,8 @@ CANONICAL_METRICS = {
     "server_used": "none",
     # Tool-specific performance
     "tool/performance/recall@10": 0.0,
+    "tool/performance/recall@20": 0.0,
+    "tool/performance/ndcg@20": 0.0,
     "tool/performance/mrr": 0.0,
     # Tool-specific format
     "tool/format/plan_depth": 0,
@@ -589,6 +596,7 @@ class ToolAgentLoop(AgentLoopBase):
             tool_call_names=tool_call_names,
             new_images_this_turn=new_images_this_turn,
         )
+        assistant_end = len(agent_data.response_mask)
         total_after_tools = len(agent_data.response_mask) + len(response_ids)
         logger.warning(
             f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: tool_response_tokens={len(response_ids)} "
@@ -616,6 +624,15 @@ class ToolAgentLoop(AgentLoopBase):
         if agent_data.response_logprobs:
             agent_data.response_logprobs += [0.0] * len(response_ids)
         agent_data.user_turns += 1
+        agent_data.extra_fields.setdefault("tool_turn_boundaries", []).append(
+            {
+                "turn": int(agent_data.assistant_turns),
+                "assistant_end": int(assistant_end),
+                "tool_response_end": int(len(agent_data.response_mask)),
+                "response_end": int(len(agent_data.response_mask)),
+                "tool_response_tokens": int(len(response_ids)),
+            }
+        )
         if should_terminate:
             logger.warning(
                 f"[AGENT_LOOP_STATUS] request_id={agent_data.request_id}: next_state=TERMINATED(after_tools)"
@@ -721,6 +738,8 @@ class ToolAgentLoop(AgentLoopBase):
                 instance_id, tool_args, agent_data=agent_data
             )
         except Exception as e:
+            if getattr(e, "fail_fast", False):
+                raise
             logger.warning(f"Error when executing tool: {e}")
             return (
                 ToolResponse(

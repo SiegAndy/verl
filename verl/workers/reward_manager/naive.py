@@ -84,6 +84,7 @@ class NaiveRewardManager(AbstractRewardManager):
                 "performance_metrics", "format_penalties", "tool_traces",
                 "tool_iteration_feedbacks", "final_metrics", "eval_report",
                 "plan_stats", "assistant_turns", "request_id",
+                "trajectory_variant", "source_request_id", "best_turn_truncation",
             ]
             merged_count = 0
             for field_name in tool_added_fields:
