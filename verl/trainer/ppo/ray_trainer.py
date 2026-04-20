@@ -1640,6 +1640,22 @@ class RayPPOTrainer:
                             metrics[f"gdpo/{key}/std"] = float(np.std(vals))
                             metrics[f"gdpo/{key}/max"] = float(np.max(vals))
                             metrics[f"gdpo/{key}/min"] = float(np.min(vals))
+                # Log per-component reward metrics from custom reward function output.
+                # The reward function returns a dict; all keys other than "score" are stored
+                # as reward_extra_keys in batch.meta_info and available in batch.non_tensor_batch.
+                _reward_extra_keys = batch.meta_info.get("reward_extra_keys", [])
+                _skip_keys = {"score"}  # already logged as critic/score/mean
+                for _rkey in _reward_extra_keys:
+                    if _rkey in _skip_keys or _rkey not in batch.non_tensor_batch:
+                        continue
+                    try:
+                        _vals = np.asarray(batch.non_tensor_batch[_rkey], dtype=np.float64)
+                        _finite = _vals[np.isfinite(_vals)]
+                        if _finite.size > 0:
+                            metrics[f"train/{_rkey}"] = float(np.mean(_finite))
+                    except (TypeError, ValueError):
+                        pass  # skip non-numeric or malformed keys
+
                 metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
                 # TODO: implement actual tflpo and theoretical tflpo
                 n_gpus = self.resource_pool_manager.get_n_gpus()

@@ -76,7 +76,13 @@ class Tracking:
             settings = None
             if config and config["trainer"].get("wandb_proxy", None):
                 settings = wandb.Settings(https_proxy=config["trainer"]["wandb_proxy"])
-            entity = os.environ.get("WANDB_ENTITY", None)
+            wandb_config = config.get("wandb", {}) if config else {}
+            entity = wandb_config.get("entity") or os.environ.get("WANDB_ENTITY", None)
+            if not entity:
+                raise ValueError(
+                    "W&B logging is enabled, but no entity was configured. "
+                    "Set 'wandb.entity' in the trainer config or export WANDB_ENTITY."
+                )
             wandb.init(project=project_name, name=experiment_name, entity=entity, config=config, settings=settings)
             self.logger["wandb"] = wandb
 
