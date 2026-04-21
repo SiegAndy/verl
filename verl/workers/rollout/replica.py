@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
@@ -23,7 +25,6 @@ from pydantic import BaseModel
 from ray.actor import ActorHandle
 
 from verl.single_controller.ray import RayClassWithInitArgs, RayWorkerGroup
-from verl.trainer.ppo.ray_trainer import RayResourcePool, ResourcePoolManager
 from verl.utils.config import omega_conf_to_dataclass
 from verl.workers.config import HFModelConfig, RolloutConfig
 
@@ -161,6 +162,7 @@ class RolloutReplica(ABC):
         resource_pool_spec = {
             resource_pool_name: [self.gpus_per_replica_node] * self.nnodes,
         }
+        from verl.trainer.ppo.ray_trainer import ResourcePoolManager
         resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=None)
         resource_pool_manager.create_resource_pool()
         self.resource_pool = resource_pool_manager.resource_pool_dict[resource_pool_name]

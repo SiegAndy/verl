@@ -5,7 +5,9 @@ from omegaconf import OmegaConf
 from tensordict import TensorDict
 
 from src.agent.trainer.decomposer.verl_integration.best_turn_truncation import (
+    accumulate_best_turn_epoch_stats,
     apply_best_turn_truncation,
+    build_best_turn_epoch_metrics,
     select_best_turn,
 )
 from src.agent.trainer.decomposer.verl_integration.custom_reward import (
@@ -15,7 +17,7 @@ from verl import DataProto
 from verl.utils.model import compute_position_id_with_mask
 
 
-def _config():
+def _config(rollout_n=1):
     return OmegaConf.create(
         {
             "best_turn_truncation": {
@@ -29,7 +31,7 @@ def _config():
             },
             "actor_rollout_ref": {
                 "actor": {"ppo_mini_batch_size": 16},
-                "rollout": {"n": 8},
+                "rollout": {"n": rollout_n},
             },
         }
     )
@@ -59,12 +61,19 @@ def _feedback(mrr, recall20, ndcg20, turn):
 
 
 def _batch(feedbacks):
-    prompt_len = 4
+    if feedbacks and isinstance(feedbacks[0], dict):
+        feedback_rows = [feedbacks]
+    else:
+        feedback_rows = feedbacks
+
+    batch_size = len(feedback_rows)
     response_len = 8
-    prompts = torch.tensor([[1, 2, 3, 4]])
-    responses = torch.tensor([[10, 11, 12, 13, 14, 15, 0, 0]])
-    response_mask = torch.tensor([[1, 0, 1, 0, 1, 0, 0, 0]])
-    attention_mask = torch.tensor([[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0]])
+    prompts = torch.tensor([[1, 2, 3, 4]]).repeat(batch_size, 1)
+    responses = torch.tensor([[10, 11, 12, 13, 14, 15, 0, 0]]).repeat(batch_size, 1)
+    response_mask = torch.tensor([[1, 0, 1, 0, 1, 0, 0, 0]]).repeat(batch_size, 1)
+    attention_mask = torch.tensor([[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0]]).repeat(
+        batch_size, 1
+    )
     input_ids = torch.cat([prompts, responses], dim=1)
     position_ids = compute_position_id_with_mask(attention_mask)
     tensors = {
@@ -74,15 +83,22 @@ def _batch(feedbacks):
         "input_ids": input_ids,
         "attention_mask": attention_mask,
         "position_ids": position_ids,
-        "rm_scores": torch.zeros((1, response_len), dtype=torch.float32),
+        "rm_scores": torch.zeros((batch_size, response_len), dtype=torch.float32),
     }
     non_tensors = {
-        "uid": np.array(["qid-1"], dtype=object),
-        "data_source": np.array(["qid-1"], dtype=object),
-        "reward_model": np.array([{"ground_truth": {}}], dtype=object),
-        "extra_info": np.array([{}], dtype=object),
-        "__num_turns__": np.array([7], dtype=np.int32),
-        "tool_iteration_feedbacks": np.array([feedbacks], dtype=object),
+        "uid": np.array([f"qid-{i+1}" for i in range(batch_size)], dtype=object),
+        "data_source": np.array(
+            [f"qid-{i+1}" for i in range(batch_size)], dtype=object
+        ),
+        "reward_model": np.array(
+            [{"ground_truth": {}} for _ in range(batch_size)], dtype=object
+        ),
+        "extra_info": np.array([{} for _ in range(batch_size)], dtype=object),
+        "__num_turns__": np.array(
+            [int(feedback_row[-1]["turn"]) * 2 + 1 for feedback_row in feedback_rows],
+            dtype=np.int32,
+        ),
+        "tool_iteration_feedbacks": np.array(feedback_rows, dtype=object),
         "tool_turn_boundaries": np.array(
             [
                 [
@@ -90,21 +106,28 @@ def _batch(feedbacks):
                     {"turn": 2, "response_end": 4},
                     {"turn": 3, "response_end": 6},
                 ]
+                for _ in range(batch_size)
             ],
             dtype=object,
         ),
         "performance_metrics": np.array(
-            [feedbacks[-1]["performance_metrics"]], dtype=object
+            [feedback_row[-1]["performance_metrics"] for feedback_row in feedback_rows],
+            dtype=object,
         ),
         "format_penalties": np.array(
-            [feedbacks[-1]["format_penalties"]], dtype=object
+            [feedback_row[-1]["format_penalties"] for feedback_row in feedback_rows],
+            dtype=object,
         ),
-        "request_id": np.array(["req-1"], dtype=object),
-        "assistant_turns": np.array([3], dtype=object),
-        "user_turns": np.array([3], dtype=object),
+        "request_id": np.array([f"req-{i+1}" for i in range(batch_size)], dtype=object),
+        "assistant_turns": np.array(
+            [feedback_row[-1]["turn"] for feedback_row in feedback_rows], dtype=object
+        ),
+        "user_turns": np.array(
+            [feedback_row[-1]["turn"] for feedback_row in feedback_rows], dtype=object
+        ),
     }
     return DataProto(
-        batch=TensorDict(tensors, batch_size=1),
+        batch=TensorDict(tensors, batch_size=batch_size),
         non_tensor_batch=non_tensors,
         meta_info={"reward_extra_keys": ["score"]},
     )
@@ -186,6 +209,153 @@ def test_apply_best_turn_truncation_splits_prefix_and_invalidates_rm_scores():
     ]
     assert truncated.non_tensor_batch["performance_metrics"][1]["mrr"] == 0.5
     assert truncated.non_tensor_batch["__num_turns__"][1] == 3
+    assert stats["best_turn/group_count"] == 1.0
+    assert stats["best_turn/groups_with_truncation_count"] == 1.0
+    assert stats["best_turn/groups_with_truncation_rate"] == 1.0
+    assert stats["best_turn/avg_truncations_per_group"] == 1.0
+    assert stats["best_turn/max_truncations_per_group"] == 1.0
+
+
+def test_apply_best_turn_truncation_group_metrics_no_samples_truncate():
+    batch = _batch(
+        [
+            [_feedback(0.1, 0.1, 0.1, 1), _feedback(0.2, 0.2, 0.2, 2)],
+            [_feedback(0.1, 0.1, 0.1, 1), _feedback(0.2, 0.2, 0.2, 2)],
+            [_feedback(0.1, 0.1, 0.1, 1), _feedback(0.2, 0.2, 0.2, 2)],
+            [_feedback(0.1, 0.1, 0.1, 1), _feedback(0.2, 0.2, 0.2, 2)],
+        ]
+    )
+
+    truncated, stats = apply_best_turn_truncation(
+        batch,
+        config=_config(rollout_n=2),
+        pad_token_id=0,
+        dp_size=1,
+    )
+
+    assert len(truncated) == 4
+    assert stats["best_turn/group_count"] == 2.0
+    assert stats["best_turn/split_count"] == 0.0
+    assert stats["best_turn/groups_with_truncation_count"] == 0.0
+    assert stats["best_turn/groups_with_truncation_rate"] == 0.0
+    assert stats["best_turn/avg_truncations_per_group"] == 0.0
+    assert stats["best_turn/max_truncations_per_group"] == 0.0
+
+
+def test_apply_best_turn_truncation_group_metrics_track_partial_and_multiple_truncations():
+    split_feedbacks = [
+        _feedback(0.5, 0.5, 0.5, 1),
+        _feedback(0.2, 0.2, 0.2, 2),
+        _feedback(0.5, 0.5, 0.5, 3),
+    ]
+    no_split_feedbacks = [
+        _feedback(0.1, 0.1, 0.1, 1),
+        _feedback(0.2, 0.2, 0.2, 2),
+    ]
+    batch = _batch(
+        [
+            split_feedbacks,
+            no_split_feedbacks,
+            split_feedbacks,
+            no_split_feedbacks,
+            split_feedbacks,
+            no_split_feedbacks,
+        ]
+    )
+
+    truncated, stats = apply_best_turn_truncation(
+        batch,
+        config=_config(rollout_n=3),
+        pad_token_id=0,
+        dp_size=1,
+    )
+
+    assert len(truncated) == 9
+    assert stats["best_turn/group_count"] == 2.0
+    assert stats["best_turn/split_count"] == 3.0
+    assert stats["best_turn/groups_with_truncation_count"] == 2.0
+    assert stats["best_turn/groups_with_truncation_rate"] == 1.0
+    assert stats["best_turn/avg_truncations_per_group"] == 1.5
+    assert stats["best_turn/max_truncations_per_group"] == 2.0
+
+
+def test_apply_best_turn_truncation_group_metrics_respect_dp_drop():
+    split_feedbacks = [
+        _feedback(0.5, 0.5, 0.5, 1),
+        _feedback(0.2, 0.2, 0.2, 2),
+        _feedback(0.5, 0.5, 0.5, 3),
+    ]
+    batch = _batch(
+        [
+            split_feedbacks,
+            split_feedbacks,
+            split_feedbacks,
+            split_feedbacks,
+        ]
+    )
+
+    truncated, stats = apply_best_turn_truncation(
+        batch,
+        config=_config(rollout_n=2),
+        pad_token_id=0,
+        dp_size=3,
+    )
+
+    assert len(truncated) == 6
+    assert stats["best_turn/drop_for_dp_divisor_count"] == 2.0
+    assert stats["best_turn/group_count"] == 2.0
+    assert stats["best_turn/split_count"] == 2.0
+    assert stats["best_turn/groups_with_truncation_count"] == 1.0
+    assert stats["best_turn/groups_with_truncation_rate"] == 0.5
+    assert stats["best_turn/avg_truncations_per_group"] == 1.0
+    assert stats["best_turn/max_truncations_per_group"] == 2.0
+
+
+def test_best_turn_epoch_metrics_aggregate_group_stats():
+    epoch_stats = {}
+    step_one = {
+        "best_turn/raw_rollout_count": 6.0,
+        "best_turn/group_count": 2.0,
+        "best_turn/split_count": 3.0,
+        "best_turn/split_rate": 0.5,
+        "best_turn/groups_with_truncation_count": 2.0,
+        "best_turn/groups_with_truncation_rate": 1.0,
+        "best_turn/avg_truncations_per_group": 1.5,
+        "best_turn/max_truncations_per_group": 2.0,
+        "best_turn/drop_for_dp_divisor_count": 1.0,
+        "best_turn/skip_all_zero": 1.0,
+        "best_turn/mean_cut_turn": 1.5,
+    }
+    step_two = {
+        "best_turn/raw_rollout_count": 3.0,
+        "best_turn/group_count": 1.0,
+        "best_turn/split_count": 1.0,
+        "best_turn/split_rate": 1.0 / 3.0,
+        "best_turn/groups_with_truncation_count": 1.0,
+        "best_turn/groups_with_truncation_rate": 1.0,
+        "best_turn/avg_truncations_per_group": 1.0,
+        "best_turn/max_truncations_per_group": 1.0,
+        "best_turn/drop_for_dp_divisor_count": 0.0,
+        "best_turn/skip_best_is_final": 2.0,
+    }
+
+    accumulate_best_turn_epoch_stats(epoch_stats, step_one)
+    accumulate_best_turn_epoch_stats(epoch_stats, step_two)
+    epoch_metrics = build_best_turn_epoch_metrics(epoch_stats)
+
+    assert epoch_metrics["best_turn_epoch/raw_rollout_count"] == 9.0
+    assert epoch_metrics["best_turn_epoch/group_count"] == 3.0
+    assert epoch_metrics["best_turn_epoch/split_count"] == 4.0
+    assert epoch_metrics["best_turn_epoch/split_rate"] == pytest.approx(4.0 / 9.0)
+    assert epoch_metrics["best_turn_epoch/groups_with_truncation_count"] == 3.0
+    assert epoch_metrics["best_turn_epoch/groups_with_truncation_rate"] == 1.0
+    assert epoch_metrics["best_turn_epoch/avg_truncations_per_group"] == pytest.approx(
+        4.0 / 3.0
+    )
+    assert epoch_metrics["best_turn_epoch/max_truncations_per_group"] == 2.0
+    assert epoch_metrics["best_turn_epoch/drop_for_dp_divisor_count"] == 1.0
+    assert epoch_metrics["best_turn_epoch/skip_all_zero"] == 1.0
+    assert epoch_metrics["best_turn_epoch/skip_best_is_final"] == 2.0
 
 
 def test_final_reward_uses_recall20_not_recall10():

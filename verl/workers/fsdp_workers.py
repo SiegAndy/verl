@@ -291,13 +291,16 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         tiled_mlp_shards=4,
     ):
         from torch.distributed.fsdp import CPUOffload, MixedPrecision
-        from transformers import (
-            AutoConfig,
-            AutoModel,
-            AutoModelForCausalLM,
-            AutoModelForImageTextToText,
-            AutoModelForVision2Seq,
-        )
+        from transformers import AutoConfig, AutoModel, AutoModelForCausalLM
+
+        try:
+            from transformers import AutoModelForVision2Seq
+        except ImportError:
+            AutoModelForVision2Seq = None
+        try:
+            from transformers import AutoModelForImageTextToText
+        except ImportError:
+            AutoModelForImageTextToText = None
 
         from verl.utils.model import get_generation_config, print_model_size, update_model_config
         from verl.utils.torch_dtypes import PrecisionType
@@ -388,11 +391,12 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                     case _:
                         actor_module_class = AutoModel
             else:
-                if type(actor_model_config) in AutoModelForVision2Seq._model_mapping.keys():
-                    actor_module_class = AutoModelForVision2Seq
-                elif type(actor_model_config) in AutoModelForCausalLM._model_mapping.keys():
+                # Check CausalLM first so text variants of dual-backend models aren't loaded as vision models.
+                if type(actor_model_config) in AutoModelForCausalLM._model_mapping.keys():
                     actor_module_class = AutoModelForCausalLM
-                elif type(actor_model_config) in AutoModelForImageTextToText._model_mapping.keys():
+                elif AutoModelForVision2Seq is not None and type(actor_model_config) in AutoModelForVision2Seq._model_mapping.keys():
+                    actor_module_class = AutoModelForVision2Seq
+                elif AutoModelForImageTextToText is not None and type(actor_model_config) in AutoModelForImageTextToText._model_mapping.keys():
                     actor_module_class = AutoModelForImageTextToText
                 else:
                     actor_module_class = AutoModel

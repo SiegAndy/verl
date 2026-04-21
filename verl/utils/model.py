@@ -30,15 +30,23 @@ from transformers import (
     AutoConfig,
     AutoModel,
     AutoModelForCausalLM,
-    AutoModelForImageTextToText,
     AutoModelForSequenceClassification,
     AutoModelForTokenClassification,
-    AutoModelForVision2Seq,
     GenerationConfig,
     MistralForSequenceClassification,
     PretrainedConfig,
     PreTrainedModel,
 )
+
+try:
+    from transformers import AutoModelForVision2Seq
+except ImportError:
+    AutoModelForVision2Seq = None
+
+try:
+    from transformers import AutoModelForImageTextToText
+except ImportError:
+    AutoModelForImageTextToText = None
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from verl.models.registry import ModelRegistry
@@ -619,7 +627,7 @@ def patch_valuehead_model(model) -> None:
 
 
 def load_valuehead_model(local_path, torch_dtype, model_config, trust_remote_code):
-    from transformers import AutoModelForCausalLM, AutoModelForTokenClassification, AutoModelForVision2Seq
+    from transformers import AutoModelForCausalLM, AutoModelForTokenClassification
 
     try:
         model = AutoModelForTokenClassification.from_pretrained(
@@ -640,7 +648,7 @@ def load_valuehead_model(local_path, torch_dtype, model_config, trust_remote_cod
 
     from trl import AutoModelForCausalLMWithValueHead
 
-    if type(model_config) in AutoModelForVision2Seq._model_mapping.keys():
+    if AutoModelForVision2Seq is not None and type(model_config) in AutoModelForVision2Seq._model_mapping.keys():
         module_class = AutoModelForVision2Seq
     else:
         module_class = AutoModelForCausalLM
@@ -681,14 +689,16 @@ def get_hf_auto_model_class(hf_config):
                 actor_module_class = AutoModel
     else:
         actor_module_class = AutoModel
-        # For VLM models, we use type to check instead of architecture
-        if type(hf_config) in AutoModelForImageTextToText._model_mapping.keys():
+        # Architecture string takes priority over type-based VLM check so that
+        # text variants of dual-backend models (e.g. Qwen3.5) aren't loaded as vision models.
+        arch_matched = False
+        for key, cls in _architecture_to_auto_class.items():
+            if cls is not None and key in hf_config.architectures[0]:
+                actor_module_class = cls
+                arch_matched = True
+                break
+        if not arch_matched and AutoModelForImageTextToText is not None and type(hf_config) in AutoModelForImageTextToText._model_mapping.keys():
             actor_module_class = AutoModelForImageTextToText
-        else:
-            for key, cls in _architecture_to_auto_class.items():
-                if key in hf_config.architectures[0]:
-                    actor_module_class = cls
-                    break
 
     return actor_module_class
 

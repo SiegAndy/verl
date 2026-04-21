@@ -93,7 +93,9 @@ from verl.workers.config import FSDPEngineConfig
 from verl.workers.utils.padding import left_right_2_no_padding, no_padding_2_padding
 
 from src.agent.trainer.decomposer.verl_integration.best_turn_truncation import (
+    accumulate_best_turn_epoch_stats,
     apply_best_turn_truncation,
+    build_best_turn_epoch_metrics,
     is_best_turn_truncation_enabled,
 )
 
@@ -2506,43 +2508,14 @@ class RayPPOTrainer:
                         metrics.update(best_turn_metrics)
                         if not hasattr(self, "_epoch_best_turn_stats"):
                             self._epoch_best_turn_stats = defaultdict(float)
-                        for key, value in best_turn_metrics.items():
-                            if key.startswith("best_turn/"):
-                                short_key = key.split("/", 1)[1]
-                                if (
-                                    short_key.endswith("_rate")
-                                    or short_key == "mean_cut_turn"
-                                ):
-                                    continue
-                                self._epoch_best_turn_stats[short_key] += float(value)
-                        epoch_raw = self._epoch_best_turn_stats.get(
-                            "raw_rollout_count", 0.0
+                        accumulate_best_turn_epoch_stats(
+                            self._epoch_best_turn_stats, best_turn_metrics
                         )
-                        if epoch_raw > 0:
-                            metrics.update(
-                                {
-                                    "best_turn_epoch/raw_rollout_count": epoch_raw,
-                                    "best_turn_epoch/split_count": self._epoch_best_turn_stats.get(
-                                        "split_count", 0.0
-                                    ),
-                                    "best_turn_epoch/split_rate": self._epoch_best_turn_stats.get(
-                                        "split_count", 0.0
-                                    )
-                                    / epoch_raw,
-                                    "best_turn_epoch/drop_for_dp_divisor_count": self._epoch_best_turn_stats.get(
-                                        "drop_for_dp_divisor_count", 0.0
-                                    ),
-                                    "best_turn_epoch/skip_all_zero": self._epoch_best_turn_stats.get(
-                                        "skip_all_zero", 0.0
-                                    ),
-                                    "best_turn_epoch/skip_best_is_final": self._epoch_best_turn_stats.get(
-                                        "skip_best_is_final", 0.0
-                                    ),
-                                    "best_turn_epoch/skip_invalid_boundary": self._epoch_best_turn_stats.get(
-                                        "skip_invalid_boundary", 0.0
-                                    ),
-                                }
+                        metrics.update(
+                            build_best_turn_epoch_metrics(
+                                self._epoch_best_turn_stats
                             )
+                        )
 
                     if "response_mask" not in batch.batch.keys():
                         batch.batch["response_mask"] = compute_response_mask(batch)
@@ -3129,11 +3102,30 @@ class RayPPOTrainer:
                 epoch_stats = self._epoch_best_turn_stats
                 raw_count = epoch_stats.get("raw_rollout_count", 0.0)
                 if raw_count > 0:
+                    group_count = epoch_stats.get("group_count", 0.0)
+                    groups_with_truncation = epoch_stats.get(
+                        "groups_with_truncation_count", 0.0
+                    )
+                    avg_truncations_per_group = (
+                        epoch_stats.get("split_count", 0.0) / group_count
+                        if group_count > 0
+                        else 0.0
+                    )
+                    groups_with_truncation_rate = (
+                        100.0 * groups_with_truncation / group_count
+                        if group_count > 0
+                        else 0.0
+                    )
                     print(
                         f"Best-Turn Truncation Epoch {epoch} Summary: "
                         f"Raw={int(raw_count)}, "
                         f"Split={int(epoch_stats.get('split_count', 0.0))} "
                         f"({100.0 * epoch_stats.get('split_count', 0.0) / raw_count:.1f}%), "
+                        f"Groups={int(group_count)}, "
+                        f"GroupsWithTruncation={int(groups_with_truncation)} "
+                        f"({groups_with_truncation_rate:.1f}%), "
+                        f"AvgTruncPerGroup={avg_truncations_per_group:.2f}, "
+                        f"MaxTruncPerGroup={epoch_stats.get('max_truncations_per_group', 0.0):.0f}, "
                         f"DroppedForDP={int(epoch_stats.get('drop_for_dp_divisor_count', 0.0))}, "
                         f"AllZero={int(epoch_stats.get('skip_all_zero', 0.0))}, "
                         f"BestIsFinal={int(epoch_stats.get('skip_best_is_final', 0.0))}, "
