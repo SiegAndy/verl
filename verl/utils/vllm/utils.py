@@ -122,6 +122,40 @@ class VLLMHijack:
 
         do_hijack(LRUCacheWorkerLoRAManager, "_load_adapter", hijack__load_adapter)
 
+        # Patch Qwen3_5ForConditionalGeneration.packed_modules_mapping.
+        #
+        # vLLM 0.17 has a bug: the mapping says in_proj_qkvz -> ["in_proj_qkv", "in_proj_z"]
+        # (2 elements), but Qwen3_5GatedDeltaNet.create_qkvz_proj creates MergedColumnParallelLinear
+        # with output_sizes=[key_dim, key_dim, value_dim, value_dim] (n_slices=4).
+        # During dummy-LoRA warmup, set_lora calls slice_lora_b which accesses lora_b[i] up to
+        # i=3, but lora_b only has 2 entries -> IndexError: list index out of range.
+        #
+        # Fix: use 4-element mapping to match the actual layer's n_slices, or use single-element
+        # mapping (same as Qwen3NextForCausalLM) so it falls through the non-packed code path
+        # and n_slices=1 is used for dummy creation.  Single-element is safest since the SFT
+        # checkpoint has no LoRA on in_proj_* modules anyway.
+        try:
+            from vllm.model_executor.models.qwen3_5 import Qwen3_5ForConditionalGeneration
+
+            orig = Qwen3_5ForConditionalGeneration.packed_modules_mapping
+            if orig.get("in_proj_qkvz") == ["in_proj_qkv", "in_proj_z"]:
+                patched = dict(orig)
+                patched["in_proj_qkvz"] = ["in_proj_qkvz"]
+                patched["in_proj_ba"] = ["in_proj_ba"]
+                Qwen3_5ForConditionalGeneration.packed_modules_mapping = patched
+                import logging
+
+                logging.getLogger(__name__).info(
+                    "[verl] Patched Qwen3_5ForConditionalGeneration.packed_modules_mapping: "
+                    "in_proj_qkvz/in_proj_ba set to single-element to avoid IndexError in set_lora."
+                )
+        except Exception as e:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                f"[verl] Could not patch Qwen3_5ForConditionalGeneration.packed_modules_mapping: {e}"
+            )
+
 
 def is_version_ge(pkg: str = "vllm", minver: str = "0.7.3"):
     """check if the package version is greater than or equal to the minimum version"""

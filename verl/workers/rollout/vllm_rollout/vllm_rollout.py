@@ -197,6 +197,12 @@ class vLLMAsyncRollout(BaseRollout):
             else int(ray.get_runtime_context().get_accelerator_ids()[device_name][0])
         )
         self.vllm_config = all_kwargs[0]["vllm_config"]
+        # Each vLLMAsyncRollout actor is a Ray worker with 1 GPU assigned by Ray.
+        # vLLM 0.17+ asserts local_world_size <= visible_device_count for
+        # non-ray backends, but this actor only sees the 1 GPU Ray gave it.
+        # Mark as "ray" so vLLM skips that assertion and the DP local_rank
+        # adjustment (Ray already set CUDA_VISIBLE_DEVICES correctly).
+        self.vllm_config.parallel_config.distributed_executor_backend = "ray"
         if self.lora_config:
             lora_dtype = getattr(torch, self.config.dtype)
             self.vllm_config.lora_config = LoRAConfig(lora_dtype=lora_dtype, **self.lora_config)
@@ -212,7 +218,8 @@ class vLLMAsyncRollout(BaseRollout):
                 # Will remove the patch after vllm support on-the-fly quant for rollout natively.
                 apply_vllm_fp8_patches()
 
-        self.inference_engine = WorkerWrapperBase(vllm_config=self.vllm_config)
+        # self.inference_engine = WorkerWrapperBase(vllm_config=self.vllm_config)
+        self.inference_engine = WorkerWrapperBase()
         self.inference_engine.init_worker(all_kwargs)
 
     def _load_model(self, *args, **kwargs):

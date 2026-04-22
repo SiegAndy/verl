@@ -19,6 +19,9 @@ import datetime
 import json
 import logging
 import os
+import re
+import shutil
+import tempfile
 import warnings
 from dataclasses import asdict
 from typing import Any, Optional
@@ -273,6 +276,74 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             self.config.ref.log_prob_micro_batch_size //= self.device_mesh.size() // self.ulysses_sequence_parallel_size
             self.config.ref.log_prob_micro_batch_size_per_gpu = self.config.ref.log_prob_micro_batch_size
 
+    @staticmethod
+    def _make_peft_compatible_lora_dir(src_dir: str) -> tuple[str, bool]:
+        """Return a PEFT-compatible copy of a LoRA checkpoint directory.
+
+        Unsloth/SFT checkpoints trained on Qwen3_5ForConditionalGeneration (VL model)
+        embed the language_model path prefix: language_model.layers.N.*
+        But the text-only base model used in verl (Qwen3_5ForCausalLM) has layers at
+        layers.N.* directly. Strip the prefix so PEFT can match keys to the model.
+
+        NOTE: PEFT's _insert_adapter_name_into_state_dict (peft/utils/save_and_load.py)
+        automatically inserts the adapter name into lora_A.weight -> lora_A.default.weight.
+        Do NOT add .default. here; doing so would cause double-insertion.
+
+        Returns (path, created_tmp) — caller must rmtree path if created_tmp.
+        """
+        from safetensors import safe_open
+
+        safetensors_path = os.path.join(src_dir, "adapter_model.safetensors")
+        if not os.path.exists(safetensors_path):
+            return src_dir, False
+
+        with safe_open(safetensors_path, framework="pt", device="cpu") as f:
+            sample_keys = list(f.keys())[:5]
+
+        print(f"[verl] LoRA checkpoint sample keys: {sample_keys}", flush=True)
+
+        needs_remap = any(".language_model." in k for k in sample_keys)
+        if not needs_remap:
+            print(f"[verl] LoRA keys have no language_model prefix, no remap needed.", flush=True)
+            return src_dir, False
+
+        tensors = {}
+        with safe_open(safetensors_path, framework="pt", device="cpu") as f:
+            for key in f.keys():
+                tensors[key] = f.get_tensor(key)
+
+        def _remap(k):
+            # Strip VL model's language_model wrapper so keys match Qwen3_5ForCausalLM structure.
+            # Do NOT add .default. here — PEFT inserts the adapter name automatically.
+            return k.replace(".language_model.layers.", ".layers.")
+
+        remapped = {_remap(k): v for k, v in tensors.items()}
+        assert len(remapped) == len(tensors), "Key collision during LoRA key remapping"
+
+        print(f"[verl] Remapped sample: {list(tensors.keys())[0]} -> {list(remapped.keys())[0]}", flush=True)
+
+        tmp_dir = tempfile.mkdtemp(prefix="verl_lora_peft_")
+        for fname in os.listdir(src_dir):
+            if fname in ("adapter_model.safetensors", "adapter_config.json"):
+                continue
+            src_fpath = os.path.join(src_dir, fname)
+            if os.path.isfile(src_fpath):
+                shutil.copy2(src_fpath, os.path.join(tmp_dir, fname))
+        save_file(remapped, os.path.join(tmp_dir, "adapter_model.safetensors"))
+
+        # Copy adapter_config.json with auto_mapping cleared so PEFT does not
+        # attempt cross-class key remapping when loading into Qwen3_5ForCausalLM.
+        adapter_config_src = os.path.join(src_dir, "adapter_config.json")
+        if os.path.exists(adapter_config_src):
+            with open(adapter_config_src) as f:
+                adapter_cfg = json.load(f)
+            adapter_cfg["auto_mapping"] = None
+            with open(os.path.join(tmp_dir, "adapter_config.json"), "w") as f:
+                json.dump(adapter_cfg, f, indent=2)
+
+        print(f"[verl] Remapped {len(remapped)} LoRA keys for PEFT (src: {src_dir} -> tmp: {tmp_dir})", flush=True)
+        return tmp_dir, True
+
     def _build_model_optimizer(
         self,
         model_path,
@@ -450,7 +521,12 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
                 # Copy adapter to local if needed
                 local_adapter_path = copy_to_local(lora_adapter_path, use_shm=self.config.model.get("use_shm", False))
 
-                actor_module = PeftModel.from_pretrained(actor_module, local_adapter_path, is_trainable=True)
+                peft_path, peft_tmp = self._make_peft_compatible_lora_dir(local_adapter_path)
+                try:
+                    actor_module = PeftModel.from_pretrained(actor_module, peft_path, is_trainable=True, low_cpu_mem_usage=True)
+                finally:
+                    if peft_tmp:
+                        shutil.rmtree(peft_path, ignore_errors=True)
                 peft_config = actor_module.peft_config["default"]
                 # Ensure task_type is TaskType enum, not string
                 if isinstance(peft_config.task_type, str):
@@ -1390,7 +1466,12 @@ class CriticWorker(Worker, DistProfilerExtension):
                 # Copy adapter to local if needed
                 local_adapter_path = copy_to_local(lora_adapter_path, use_shm=self.config.model.get("use_shm", False))
 
-                critic_module = PeftModel.from_pretrained(critic_module, local_adapter_path, is_trainable=True)
+                peft_path, peft_tmp = self._make_peft_compatible_lora_dir(local_adapter_path)
+                try:
+                    critic_module = PeftModel.from_pretrained(critic_module, peft_path, is_trainable=True, low_cpu_mem_usage=True)
+                finally:
+                    if peft_tmp:
+                        shutil.rmtree(peft_path, ignore_errors=True)
                 peft_config = critic_module.peft_config["default"]
                 # Ensure task_type is TaskType enum, not string
                 # Use TOKEN_CLS for Critic since it's loaded as AutoModelForTokenClassification
