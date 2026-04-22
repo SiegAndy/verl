@@ -284,6 +284,18 @@ class vLLMAsyncRollout(BaseRollout):
                 logger.info(f"FP8 weights loaded (async), loaded_params: {len(loaded_params)}")
             else:
                 logger.info("Loading standard weights (non-FP8, async)")
+                # Qwen3_5ForConditionalGeneration (vLLM) uses language_model.model.* / language_model.lm_head.*
+                # but the FSDP actor is Qwen3_5ForCausalLM which uses model.* / lm_head.* directly.
+                # Remap keys so vLLM can find the parameters.
+                model_cls_name = type(model).__name__
+                if "ForConditionalGeneration" in model_cls_name:
+                    def _remap_weights(w):
+                        for name, tensor in w:
+                            if name.startswith("model.") or name.startswith("lm_head."):
+                                name = "language_model." + name
+                            yield name, tensor
+                    weights = _remap_weights(weights)
+                    logger.info(f"[verl] Remapping actor weights to {model_cls_name} key format (prepending language_model.)")
                 model.load_weights(weights)
 
     def generate_sequences(self, prompts: DataProto) -> DataProto:

@@ -156,8 +156,22 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         if not torch.distributed.is_initialized():
             rank = int(os.environ.get("RANK", 0))
             world_size = int(os.environ.get("WORLD_SIZE", 1))
+            _device = get_device_name()
+            if _device == "cpu":
+                # Re-check at call time in case the module-level constant was captured before
+                # Ray assigned GPUs to this worker process.
+                import torch
+                if torch.cuda.is_available():
+                    _device = "cuda"
+                else:
+                    raise RuntimeError(
+                        f"FSDP worker (rank={rank}) cannot find a CUDA device. "
+                        f"CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', 'unset')}. "
+                        "Ensure the Slurm job requests GPUs (--gres=gpu:N) and Ray actors "
+                        "are allocated GPUs."
+                    )
             torch.distributed.init_process_group(
-                backend=f"cpu:gloo,{get_device_name()}:{get_nccl_backend()}",
+                backend=f"cpu:gloo,{_device}:{get_nccl_backend()}",
                 rank=rank,
                 world_size=world_size,
                 timeout=datetime.timedelta(seconds=self.config.get("nccl_timeout", 600)),
