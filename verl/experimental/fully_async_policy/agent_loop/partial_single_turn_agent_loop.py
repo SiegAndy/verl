@@ -68,7 +68,7 @@ class PartialSingleTurnAgentLoop(AgentLoopBase):
                 prompt_ids = await self.loop.run_in_executor(
                     None,
                     lambda: self.tokenizer.apply_chat_template(
-                        messages, add_generation_prompt=True, tokenize=True, **self.apply_chat_template_kwargs
+                        messages, add_generation_prompt=True, tokenize=True, return_dict=False, **self.apply_chat_template_kwargs
                     ),
                 )
         else:

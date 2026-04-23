@@ -17,11 +17,12 @@ def initialize_system_prompt(tokenizer, **apply_chat_template_kwargs) -> list[in
     Returns:
         List of token IDs for the system prompt, or empty list if not supported
     """
+    # return_dict=False: transformers>=4.54 defaults to True, returning BatchEncoding instead of list[int]
     token1 = tokenizer.apply_chat_template(
-        [{"role": "user", "content": ""}], add_generation_prompt=False, tokenize=True
+        [{"role": "user", "content": ""}], add_generation_prompt=False, tokenize=True, return_dict=False
     )
     token2 = tokenizer.apply_chat_template(
-        [{"role": "user", "content": ""}] * 2, add_generation_prompt=False, tokenize=True
+        [{"role": "user", "content": ""}] * 2, add_generation_prompt=False, tokenize=True, return_dict=False
     )
     # get system prompt tokens
     system_prompt = token1[: -(len(token2) - len(token1))]
@@ -30,15 +31,15 @@ def initialize_system_prompt(tokenizer, **apply_chat_template_kwargs) -> list[in
 
 def extract_system_prompt_and_generation(tokenizer):
     token1 = tokenizer.apply_chat_template(
-        [{"role": "user", "content": ""}], add_generation_prompt=False, tokenize=True
+        [{"role": "user", "content": ""}], add_generation_prompt=False, tokenize=True, return_dict=False
     )
     token2 = tokenizer.apply_chat_template(
-        [{"role": "user", "content": ""}] * 2, add_generation_prompt=False, tokenize=True
+        [{"role": "user", "content": ""}] * 2, add_generation_prompt=False, tokenize=True, return_dict=False
     )
     # get system prompt tokens
     system_prompt = token1[: -(len(token2) - len(token1))]
     # get generate prompt tokens
-    token3 = tokenizer.apply_chat_template([{"role": "user", "content": ""}], add_generation_prompt=True, tokenize=True)
+    token3 = tokenizer.apply_chat_template([{"role": "user", "content": ""}], add_generation_prompt=True, tokenize=True, return_dict=False)
     generate_prompt = token3[len(token1) :]
 
     return system_prompt, generate_prompt

@@ -314,6 +314,7 @@ class AgentLoopBase(ABC):
                     tools=tools,
                     add_generation_prompt=True,
                     tokenize=True,
+                    return_dict=False,  # transformers>=4.54 defaults return_dict=True; we need a plain list
                     **self.apply_chat_template_kwargs,
                 ),
             )
@@ -384,7 +385,13 @@ class AgentLoopWorker:
         self.model_name = "/".join(model_path.split("/")[-2:])
         local_path = copy_to_local(config.actor_rollout_ref.model.path)
         self.tokenizer = hf_tokenizer(local_path, trust_remote_code=True)
-        self.processor = hf_processor(local_path, trust_remote_code=True)
+        _lm_only = (
+            config.actor_rollout_ref.rollout
+            .get("engine_kwargs", {})
+            .get("vllm", {})
+            .get("language_model_only", False)
+        )
+        self.processor = None if _lm_only else hf_processor(local_path, trust_remote_code=True)
 
         agent_loop_config_path = (
             config.actor_rollout_ref.rollout.agent.agent_loop_config_path
