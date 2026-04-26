@@ -355,7 +355,6 @@ class ToolAgentLoop(AgentLoopBase):
         )
         prompt_ids = await self.apply_chat_template(
             agent_data.messages,
-            tools=self.tool_schemas,
             images=agent_data.image_data,
             videos=agent_data.video_data,
         )
@@ -662,11 +661,28 @@ class ToolAgentLoop(AgentLoopBase):
                 ),
             )
 
-        return await self.apply_chat_template(
-            add_messages,
-            images=new_images_this_turn,
-            videos=None,
-            remove_system_prompt=True,
+        if new_images_this_turn:
+            return await self.apply_chat_template(
+                add_messages,
+                images=new_images_this_turn,
+                videos=None,
+                remove_system_prompt=True,
+            )
+
+        tool_response_text = "<|im_start|>user"
+        for message in add_messages:
+            content = message.get("content") or ""
+            if isinstance(content, list):
+                content = "\n".join(
+                    str(item.get("text", "")) if isinstance(item, dict) else str(item)
+                    for item in content
+                )
+            tool_response_text += f"\n<tool_response>\n{content}\n</tool_response>"
+        tool_response_text += "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+
+        return await self.loop.run_in_executor(
+            None,
+            lambda: self.tokenizer.encode(tool_response_text, add_special_tokens=False),
         )
 
     async def _handle_interacting_state(self, agent_data: AgentData) -> AgentState:

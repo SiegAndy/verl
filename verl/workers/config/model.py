@@ -87,6 +87,10 @@ class HFModelConfig(BaseConfig):
 
     # path to pre-trained LoRA adapter to load for continued training
     lora_adapter_path: Optional[str] = None
+
+    # When True, prefer AutoModelForImageTextToText (e.g. Qwen3_5ForConditionalGeneration)
+    # over AutoModelForCausalLM so that LoRA adapter keys from VL-architecture SFT checkpoints match.
+    force_as_vl_model: bool = False
     use_liger: bool = False
 
     use_fused_kernels: bool = False

@@ -758,6 +758,13 @@ class AgentLoopWorker:
         image_grid_thw = multi_modal_inputs.get("image_grid_thw")
         video_grid_thw = multi_modal_inputs.get("video_grid_thw")
 
+        # When no vision inputs are present (text-only mode), fall back to regular sequential
+        # position IDs. This handles VL models (e.g. Qwen3_5ForConditionalGeneration) that load
+        # a VL processor but are used without images — their text-model inner core accepts 2D
+        # position_ids just like a CausalLM.
+        if image_grid_thw is None and video_grid_thw is None:
+            return compute_position_id_with_mask(attention_mask)
+
         # Model's get_rope_index has been dynamically bind to the processor.
         vision_position_ids, _ = self.processor.get_rope_index(
             input_ids=input_ids,

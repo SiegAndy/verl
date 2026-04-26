@@ -212,7 +212,7 @@ class vLLMAsyncRollout(BaseRollout):
                 # Will remove the patch after vllm support on-the-fly quant for rollout natively.
                 apply_vllm_fp8_patches()
 
-        self.inference_engine = WorkerWrapperBase(vllm_config=self.vllm_config)
+        self.inference_engine = WorkerWrapperBase()
         self.inference_engine.init_worker(all_kwargs)
 
     def _load_model(self, *args, **kwargs):
