@@ -717,6 +717,9 @@ class AgentLoopWorker:
 
         images = output.multi_modal_data.get("images")
         videos = output.multi_modal_data.get("videos")
+        if not images and not videos:
+            return multi_modal_inputs
+
         # split the videos and according metadatas
         if videos is not None:
             videos, video_metadatas = zip(*videos, strict=False)
@@ -932,7 +935,7 @@ class AgentLoopWorker:
 
         # Add multi_modal_inputs to non_tensor_batch if any samples have them
         multi_modal_inputs_list = [input.multi_modal_inputs for input in inputs]
-        if any(mmi is not None for mmi in multi_modal_inputs_list):
+        if any(mmi for mmi in multi_modal_inputs_list):
             non_tensor_batch["multi_modal_inputs"] = np.array(
                 multi_modal_inputs_list, dtype=object
             )

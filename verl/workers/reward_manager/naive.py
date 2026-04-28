@@ -85,6 +85,7 @@ class NaiveRewardManager(AbstractRewardManager):
                 "tool_iteration_feedbacks", "final_metrics", "eval_report",
                 "plan_stats", "assistant_turns", "request_id",
                 "trajectory_variant", "source_request_id", "best_turn_truncation",
+                "tool_error",
             ]
             merged_count = 0
             for field_name in tool_added_fields:
@@ -93,6 +94,11 @@ class NaiveRewardManager(AbstractRewardManager):
                     # Handle numpy array wrapping (single item arrays)
                     if hasattr(field_value, '__len__') and len(field_value) == 1:
                         field_value = field_value[0]
+                    # Batch alignment inserts None for fields that only exist on
+                    # some rollouts. Do not let those placeholders shadow the
+                    # reward function's missing-field/error handling.
+                    if field_value is None:
+                        continue
                     extra_info[field_name] = field_value
                     merged_count += 1
             
@@ -126,11 +132,18 @@ class NaiveRewardManager(AbstractRewardManager):
 
             if isinstance(score, dict):
                 reward = score["score"]
-                # Store the information including original reward
-                for key, value in score.items():
-                    reward_extra_info[key].append(value)
+                # Reward dicts can be heterogeneous: parse/tool-error rows may
+                # expose error-only keys while successful rows expose richer
+                # metrics. Keep every extra-info column aligned with the batch.
+                for key in score:
+                    if key not in reward_extra_info:
+                        reward_extra_info[key] = [None] * i
+                for key in list(reward_extra_info.keys()):
+                    reward_extra_info[key].append(score.get(key, None))
             else:
                 reward = score
+                for key in list(reward_extra_info.keys()):
+                    reward_extra_info[key].append(None)
 
             reward_tensor[i, valid_response_length - 1] = reward
 

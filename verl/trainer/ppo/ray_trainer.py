@@ -2532,9 +2532,9 @@ class RayPPOTrainer:
                     ).tolist()
                     # get images_seqlens
                     images_seqlens_all = []
-                    for multi_modal_input in batch.non_tensor_batch[
-                        "multi_modal_inputs"
-                    ]:
+                    for multi_modal_input in batch.non_tensor_batch.get(
+                        "multi_modal_inputs", []
+                    ):
                         if "image_grid_thw" not in multi_modal_input.keys():
                             continue
                         images_seqlens_all.extend(
