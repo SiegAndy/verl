@@ -575,7 +575,8 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
             buffer_dtype = PrecisionType.to_dtype(mixed_precision_config.get("buffer_dtype", "fp32"))
         else:
             param_dtype = PrecisionType.to_dtype(fsdp_config.dtype)
-            reduce_dtype = torch.float32
+            # Use bf16 for gradient allreduce to halve the reduce-scatter buffer (~8→4 GiB on 9B model).
+            reduce_dtype = param_dtype
             buffer_dtype = torch.float32
 
         mixed_precision = MixedPrecision(param_dtype=param_dtype, reduce_dtype=reduce_dtype, buffer_dtype=buffer_dtype)
