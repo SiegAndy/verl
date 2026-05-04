@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import ast
 import json
 import logging
 import os
@@ -26,6 +27,21 @@ from verl.utils.rollout_trace import rollout_trace_op
 
 logger = logging.getLogger(__file__)
 logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
+
+
+def _loads_tool_call(raw_tool_call: str) -> Any:
+    """Parse a tool-call object, accepting strict JSON first and safe Python literals as fallback."""
+    try:
+        return json.loads(raw_tool_call)
+    except json.JSONDecodeError as json_error:
+        try:
+            parsed = ast.literal_eval(raw_tool_call)
+        except (ValueError, SyntaxError) as literal_error:
+            raise json_error from literal_error
+        if not isinstance(parsed, dict):
+            raise json_error
+        logger.warning("Recovered non-JSON Python-literal tool call. Raw tool request: %r", raw_tool_call)
+        return parsed
 
 
 class FunctionCall(BaseModel):
@@ -101,11 +117,11 @@ class HermesToolParser(ToolParser):
         function_calls = []
         for match in matches:
             try:
-                function_call = json.loads(match)
+                function_call = _loads_tool_call(match)
                 name, arguments = function_call["name"], function_call["arguments"]
                 function_calls.append(FunctionCall(name=name, arguments=json.dumps(arguments, ensure_ascii=False)))
             except Exception as e:
-                logger.error(f"Failed to decode tool call: {e}")
+                logger.error("Failed to decode tool call: %s. Raw tool request: %r", e, match)
 
         # remaing text exclude tool call tokens
         content = self.tool_call_regex.sub("", text)
@@ -162,7 +178,7 @@ class GptOssToolParser(ToolParser):
                 # don't check if arguments is valid JSON and leave it to client
                 function_calls.append(FunctionCall(name=name, arguments=arguments))
             except Exception as e:
-                logger.error(f"Failed to decode tool call: {e}")
+                logger.error("Failed to decode tool call: %s. Raw tool request: %r", e, match)
 
         # remaing text exclude tool call tokens
         content = regex.sub(self.tool_call_pattern, "", text)
