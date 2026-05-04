@@ -1029,6 +1029,9 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
     @DistProfiler.annotate(color="red", role="actor_update")
     def update_actor(self, data: DataProto):
         assert self._is_actor
+        # Return cached-but-free GPU memory to CUDA before loading model+optimizer,
+        # so the backward-pass allreduce buffer has a clean contiguous block.
+        aggressive_empty_cache(force_sync=True)
         if self._is_offload_param:
             load_fsdp_model_to_gpu(self.actor_module_fsdp)
         if self._is_offload_optimizer:
@@ -1068,6 +1071,10 @@ class ActorRolloutRefWorker(Worker, DistProfilerExtension):
         if self._is_offload_optimizer:
             offload_fsdp_optimizer(optimizer=self.actor_optimizer)
             log_gpu_memory_usage("After offload actor optimizer during update_actor", logger=logger)
+
+        # Return offloaded memory from PyTorch's cache back to CUDA so vLLM's
+        # CuMemAllocator can re-map KV cache and weights on wake_up.
+        aggressive_empty_cache(force_sync=True)
 
         return output
 

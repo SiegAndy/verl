@@ -27,6 +27,9 @@ PPO_RAY_RUNTIME_ENV = {
         # TODO: disable compile cache due to cache corruption issue
         # https://github.com/vllm-project/vllm/issues/31199
         "VLLM_DISABLE_COMPILE_CACHE": "1",
+        # Reduce CUDA allocator fragmentation; prevents OOM during backward when
+        # long rollouts spike peak memory near the 80 GB limit.
+        "PYTORCH_ALLOC_CONF": "expandable_segments:True",
         # Needed for multi-processes colocated on same NPU device
         # https://www.hiascend.com/document/detail/zh/canncommercial/83RC1/maintenref/envvar/envref_07_0143.html
         "HCCL_HOST_SOCKET_PORT_RANGE": "auto",
