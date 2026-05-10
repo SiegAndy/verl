@@ -85,18 +85,51 @@ def apply_chat_template(
             **kwargs,
         )
     except Exception:
-        # Qwen3.5 apply_chat_template needs messages with at least one user message
+        # Some templates (notably Qwen3.5) require both:
+        #   (a) at least one user message in the messages list, AND
+        #   (b) any system message to be at index 0.
+        # Single-message tokenization (used by MultiTurnSFTDataset's per-turn
+        # rendering) violates (a) for system/assistant/tool-only turns. The
+        # original fallback prepended a dummy user, which works for assistant
+        # / tool single-message turns but breaks (b) when the input starts
+        # with a system message — putting system at index 1 raises "System
+        # message must be at the beginning."
+        # Fix: pick prepend vs append based on the leading role.
         dummy_user_message = [{"role": "user", "content": [{"type": "text", "text": ""}]}]
-        dummy_user_prefix = processor.apply_chat_template(
-            dummy_user_message,
-            tokenize=tokenize,
-            add_generation_prompt=False,
-            tools=tools,
-            return_dict=return_dict,
-            **kwargs,
+        starts_with_system = (
+            bool(messages)
+            and isinstance(messages[0], dict)
+            and messages[0].get("role") == "system"
         )
+        if starts_with_system:
+            # Append the dummy user so system stays at index 0. The dummy's
+            # trailing contribution (including any generation prompt) is
+            # measured by rendering it alone with the SAME add_generation_prompt
+            # setting and stripped from the end of the full render.
+            extended = list(messages) + dummy_user_message
+            dummy_render = processor.apply_chat_template(
+                dummy_user_message,
+                tokenize=tokenize,
+                add_generation_prompt=add_generation_prompt,
+                tools=tools,
+                return_dict=return_dict,
+                **kwargs,
+            )
+        else:
+            # Original behavior: prepend the dummy user. Its leading
+            # contribution does NOT include a generation prompt (the gen
+            # prompt only appears at the very end of the full render).
+            extended = dummy_user_message + list(messages)
+            dummy_render = processor.apply_chat_template(
+                dummy_user_message,
+                tokenize=tokenize,
+                add_generation_prompt=False,
+                tools=tools,
+                return_dict=return_dict,
+                **kwargs,
+            )
         output = processor.apply_chat_template(
-            dummy_user_message + messages,
+            extended,
             tokenize=tokenize,
             add_generation_prompt=add_generation_prompt,
             tools=tools,
@@ -104,20 +137,30 @@ def apply_chat_template(
             **kwargs,
         )
 
-        if not tokenize:  # tokenize=False
-            return output[len(dummy_user_prefix) :]
-        elif not return_dict:  # tokenize=True and return_dict=False
+        def _strip(seq, dummy):
+            return seq[: len(seq) - len(dummy)] if starts_with_system else seq[len(dummy):]
+
+        if not tokenize:  # tokenize=False -> str
+            return _strip(output, dummy_render)
+        elif not return_dict:  # tokenize=True and return_dict=False -> list[int]
             if isinstance(output[0], list):  # transformers>=5
                 assert len(output) == 1, "output must be a list[int] or list[list[int]]"
-                dummy_user_prefix = dummy_user_prefix[0]
+                dummy_render = dummy_render[0]
                 output = output[0]
-            return output[len(dummy_user_prefix) :]
+            return _strip(output, dummy_render)
         else:  # tokenize=True and return_dict=True and return_tensors="pt"
-            dummy_user_prefix = dict(dummy_user_prefix)
+            dummy_render = dict(dummy_render)
             output = dict(output)
-            prefix_len = dummy_user_prefix["input_ids"].shape[1]
-            output["input_ids"] = output["input_ids"][:, prefix_len:]
-            output["attention_mask"] = output["attention_mask"][:, prefix_len:]
-            if "mm_token_type_ids" in output:
-                output["mm_token_type_ids"] = output["mm_token_type_ids"][:, prefix_len:]
+            dummy_len = dummy_render["input_ids"].shape[1]
+            if starts_with_system:
+                n = output["input_ids"].shape[1]
+                output["input_ids"] = output["input_ids"][:, : n - dummy_len]
+                output["attention_mask"] = output["attention_mask"][:, : n - dummy_len]
+                if "mm_token_type_ids" in output:
+                    output["mm_token_type_ids"] = output["mm_token_type_ids"][:, : n - dummy_len]
+            else:
+                output["input_ids"] = output["input_ids"][:, dummy_len:]
+                output["attention_mask"] = output["attention_mask"][:, dummy_len:]
+                if "mm_token_type_ids" in output:
+                    output["mm_token_type_ids"] = output["mm_token_type_ids"][:, dummy_len:]
             return output
