@@ -1,3 +1,4 @@
 [submodule "recipe"]
 	path = recipe
-	url = https://github.com/verl-project/verl-recipe.git
+	url = https://github.com/SiegAndy/verl-recipe.git
+	branch = grepseek

@@ -1357,6 +1357,18 @@ class RayPPOTrainer:
                 metrics = {}
                 timing_raw = {}
 
+                # Publish current global_step to a tiny file in default_local_dir
+                # so custom reward functions (which run in separate Ray workers
+                # and don't see self.global_steps) can read it for per-step
+                # behavior like penalty warmup. Best-effort: any write error is
+                # swallowed so it never breaks training.
+                try:
+                    _step_file = os.path.join(self.config.trainer.default_local_dir, "current_step.txt")
+                    with open(_step_file, "w") as _f:
+                        _f.write(str(self.global_steps))
+                except Exception:
+                    pass
+
                 with marked_timer("start_profile", timing_raw):
                     self._start_profiling(
                         not prev_step_profile and curr_step_profile
